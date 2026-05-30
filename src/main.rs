@@ -5,6 +5,7 @@ mod api;
 mod camera;
 mod cube;
 mod geom;
+mod solver;
 mod swipe;
 mod ui;
 mod view_relative;
