@@ -31,9 +31,6 @@ const MAX_SOLUTION_LEN: u8 = 23;
 
 /// Generate the two-phase move + pruning tables. SLOW (seconds) — the caller runs
 /// this once, off-thread, and caches the handle. Pure (no Bevy).
-// §Solver public contract (consumed by the Bevy solve layer, a later unit); the
-// Stage-1 binary does not call it yet, so allow it to look unused for now.
-#[allow(dead_code)]
 pub fn build_tables() -> DataTable {
     DataTable::default()
 }
@@ -42,8 +39,6 @@ pub fn build_tables() -> DataTable {
 /// [`Move`]s (low move count, `<= 23`). An already-solved state returns an empty vec
 /// (`Ok(vec![])`). A physically impossible / invalid state returns
 /// `Err(SolveError::Unsolvable)`.
-// §Solver public contract (see `build_tables`); not yet called by the binary.
-#[allow(dead_code)]
 pub fn solve(tables: &DataTable, state: &CubeState) -> Result<Vec<Move>, SolveError> {
     let facelets = state_to_facelets(state);
     let face_cube =

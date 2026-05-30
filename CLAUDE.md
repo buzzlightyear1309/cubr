@@ -74,7 +74,7 @@ verifying it from an agent, launch in the background, screenshot with `screencap
 ## Architecture
 ```
 src/
-├── main.rs        # App + plugin wiring: CubePlugin, CameraPlugin, UiPlugin, ApiPlugin, MeshPickingPlugin, SwipePlugin
+├── main.rs        # App + plugin wiring: CubePlugin, CameraPlugin, UiPlugin, ApiPlugin, MeshPickingPlugin, SwipePlugin, SolverPlugin
 ├── cube/
 │   ├── core.rs    # PURE integer-math cube (source of truth) — no Bevy, fully unit-tested
 │   ├── model.rs   # StickerColor, Face, Move (parse/notation), CubeState (serde JSON shape)
@@ -82,9 +82,11 @@ src/
 │   └── animation.rs # MoveQueue consumer; ~0.25s smoothstep layer turns, one at a time
 ├── camera.rs      # re-basing turntable orbit (pole follows the tumble, smooth re-level, `L` levels) + wheel zoom; OrbitCamera::basis()
 ├── geom.rs        # small shared geometry helper (best_by_dot: nearest direction by dot product)
-├── view_relative.rs # pure view-relative mapping: RelFace + relative_move(basis) -> absolute Move (Beginner panel)
+├── view_relative.rs # pure view-relative mapping: RelFace + relative_move(basis) -> Move, describe (inverse) + rel_label (Beginner wording)
 ├── swipe.rs       # mesh-picking swipe/flick — drag a visible layer to turn it -> MoveQueue
 ├── ui.rs          # native bevy_ui: Standard/Beginner scheme toggle, move grids + Reset -> MoveQueue
+├── solver.rs      # PURE kewb two-phase adapter: CubeState -> Vec<Move>; no Bevy, fully unit-tested
+├── solve_ui.rs    # SolverPlugin: right Solve/Run panel + off-thread table build; scheme-aware step list -> MoveQueue
 └── api/           # tiny_http on its own thread + mpsc channel -> Bevy (non-blocking)
 ```
 **Key invariant:** the pure `CubeCore` is the single source of truth (geometry *and* color); Bevy

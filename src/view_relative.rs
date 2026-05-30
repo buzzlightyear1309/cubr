@@ -61,8 +61,6 @@ const REL_ORDER: [RelFace; 6] = [
 /// face whose world direction aligns best with `m.face`'s outward normal — the right
 /// thing to *tell the user* ("turn the Left face") since the panel enqueues the
 /// absolute move directly. `describe` is therefore total and never panics.
-// Consumed by the Beginner-mode steps panel (Unit 3); allow until that lands.
-#[allow(dead_code)]
 pub fn describe(basis: (Vec3, Vec3, Vec3), m: Move) -> (RelFace, Turn) {
     if let Some(rel) = REL_ORDER
         .into_iter()
@@ -73,6 +71,35 @@ pub fn describe(basis: (Vec3, Vec3, Vec3), m: Move) -> (RelFace, Turn) {
     let target = m.face.normal().as_vec3();
     let rel = crate::geom::best_by_dot(target, REL_ORDER.map(|r| (r, rel_dir(basis, r))));
     (rel, m.turn)
+}
+
+/// Full-word name for a relative face (Beginner-mode UI wording).
+pub(crate) fn rel_word(rel: RelFace) -> &'static str {
+    match rel {
+        RelFace::Front => "Front",
+        RelFace::Back => "Back",
+        RelFace::Up => "Up",
+        RelFace::Down => "Down",
+        RelFace::Left => "Left",
+        RelFace::Right => "Right",
+    }
+}
+
+/// Spelled-out turn for a relative label. Plain ASCII: the stock Bevy font ships a
+/// minimal glyph set (rotation arrows ↻/↺ and the degree sign render as tofu), so
+/// the turn is text and the half turn is "180" (no ° symbol).
+pub(crate) fn turn_word(turn: Turn) -> &'static str {
+    match turn {
+        Turn::Cw => "CW",
+        Turn::Ccw => "CCW",
+        Turn::Double => "180",
+    }
+}
+
+/// The view-relative label for a face + turn, e.g. "Front CW", "Up 180". Shared by
+/// the Beginner move buttons (`ui.rs`) and the Beginner step list (`solve_ui.rs`).
+pub(crate) fn rel_label(rel: RelFace, turn: Turn) -> String {
+    format!("{} {}", rel_word(rel), turn_word(turn))
 }
 
 /// World direction a relative face points along, for the given `basis`.

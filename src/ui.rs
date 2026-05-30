@@ -3,7 +3,7 @@ use bevy::prelude::*;
 use crate::camera::OrbitCamera;
 use crate::cube::model::{CubeState, Move, Turn};
 use crate::cube::{ApplyState, MoveQueue};
-use crate::view_relative::{relative_move, RelFace};
+use crate::view_relative::{rel_label, relative_move, RelFace};
 
 /// Native bevy_ui panel feeding the shared `MoveQueue`, with a header toggle
 /// between two control schemes:
@@ -277,31 +277,6 @@ fn spawn_relative_button(parent: &mut ChildSpawnerCommands, rel: RelFace, turn: 
         rel_label(rel, turn),
         RelMoveButton { rel, turn },
     );
-}
-
-/// Full-word name for a relative face.
-fn rel_word(rel: RelFace) -> &'static str {
-    match rel {
-        RelFace::Front => "Front",
-        RelFace::Back => "Back",
-        RelFace::Up => "Up",
-        RelFace::Down => "Down",
-        RelFace::Left => "Left",
-        RelFace::Right => "Right",
-    }
-}
-
-/// Beginner button label: full word + spelled-out turn (CW, CCW, 180). The stock
-/// Bevy font ships a minimal glyph set — rotation arrows (↻/↺) and even the
-/// degree sign render as tofu — so labels stay plain ASCII: turn direction is
-/// text and the half turn is "180" (no ° symbol).
-fn rel_label(rel: RelFace, turn: Turn) -> String {
-    let word = rel_word(rel);
-    match turn {
-        Turn::Cw => format!("{word} CW"),
-        Turn::Ccw => format!("{word} CCW"),
-        Turn::Double => format!("{word} 180"),
-    }
 }
 
 /// The background color for a button's interaction state.

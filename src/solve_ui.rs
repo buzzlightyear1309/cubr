@@ -20,13 +20,13 @@ use bevy::tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task};
 
 use crate::camera::OrbitCamera;
 use crate::cube::animation::ActiveMove;
-use crate::cube::model::{Move, Turn};
+use crate::cube::model::Move;
 use crate::cube::{ApplyState, Cube, MoveQueue};
 use crate::solver;
 use crate::ui::{
     set_button_color, spawn_labeled_button, ControlScheme, BTN_PRESSED, LABEL_COLOR, PANEL_BG,
 };
-use crate::view_relative::{describe, RelFace};
+use crate::view_relative::{describe, rel_label};
 
 /// The solver tables, once the background build completes (`None` while loading).
 #[derive(Resource, Default)]
@@ -129,28 +129,6 @@ fn status_text(status: SolveStatus) -> String {
         SolveStatus::Solved(n) => format!("Solved in {n} moves"),
         SolveStatus::AlreadySolved => "Already solved".to_string(),
         SolveStatus::Unsolvable => "Unsolvable state".to_string(),
-    }
-}
-
-/// View-relative wording for a `Turn`, matching `ui.rs`'s `rel_label` (ASCII
-/// only — the stock Bevy font has no arrow/degree glyphs).
-fn turn_word(turn: Turn) -> &'static str {
-    match turn {
-        Turn::Cw => "CW",
-        Turn::Ccw => "CCW",
-        Turn::Double => "180",
-    }
-}
-
-/// Full-word name for a relative face (matches `ui.rs`'s `rel_word`).
-fn rel_word(rel: RelFace) -> &'static str {
-    match rel {
-        RelFace::Front => "Front",
-        RelFace::Back => "Back",
-        RelFace::Up => "Up",
-        RelFace::Down => "Down",
-        RelFace::Left => "Left",
-        RelFace::Right => "Right",
     }
 }
 
@@ -430,7 +408,7 @@ fn update_step_text(
             ControlScheme::Standard => mv.notation(),
             ControlScheme::Beginner => {
                 let (rel, turn) = describe(orbit.basis(), mv);
-                format!("{} {}", rel_word(rel), turn_word(turn))
+                rel_label(rel, turn)
             }
         };
         *text = Text::new(format!("{}. {}", row.index + 1, move_label));
@@ -444,6 +422,12 @@ fn update_step_text(
 
 /// Mirror the current `SolveStatus` into the status line.
 fn update_status_text(solution: Res<Solution>, mut text: Query<&mut Text, With<StatusText>>) {
+    // The status changes only a handful of times per session; skip the per-frame
+    // string rebuild when nothing changed. (`update_step_text` deliberately runs
+    // every frame so Beginner labels track the orbiting camera.)
+    if !solution.is_changed() {
+        return;
+    }
     if let Ok(mut text) = text.single_mut() {
         *text = Text::new(status_text(solution.status));
     }
