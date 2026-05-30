@@ -174,28 +174,43 @@ pub(crate) struct Pdbs {
 }
 
 impl Pdbs {
-    /// Build all three databases from scratch. SLOW (~1–3 min single-threaded; the
-    /// corner PDB is the long pole). The caller caches the result to disk.
+    /// Build all three databases from scratch. SLOW (tens of seconds in release; far
+    /// longer in a dev/unoptimised build). The caller caches the result to disk.
+    ///
+    /// The three PDBs are independent (separate arrays + state spaces), so they build
+    /// **concurrently** on scoped threads: the move tables are shared by immutable
+    /// reference and each `build_pdb` writes its own `Vec<u8>`, so there is no shared
+    /// mutable state. Wall-clock is bounded by the longest single build (the corner
+    /// PDB) rather than the sum of all three.
     pub(crate) fn generate() -> Pdbs {
         use super::coords::build_pdb;
 
         let corner_tabs = CornerMoveTables::build();
         let edge_tabs = EdgeMoveTables::build();
 
-        let corner = build_pdb(CORNER_SIZE, corner_index(&SOLVED), |idx, out| {
-            for mv in 0..18usize {
-                out.push(corner_tabs.neighbor(idx, mv));
-            }
-        });
-        let edge_a = build_pdb(EDGE_SIZE, edge_index_a(&SOLVED), |idx, out| {
-            for mv in 0..18usize {
-                out.push(edge_tabs.neighbor(idx, mv));
-            }
-        });
-        let edge_b = build_pdb(EDGE_SIZE, edge_index_b(&SOLVED), |idx, out| {
-            for mv in 0..18usize {
-                out.push(edge_tabs.neighbor(idx, mv));
-            }
+        let (corner, edge_a, edge_b) = std::thread::scope(|s| {
+            let corner = s.spawn(|| {
+                build_pdb(CORNER_SIZE, corner_index(&SOLVED), |idx, out| {
+                    for mv in 0..18usize {
+                        out.push(corner_tabs.neighbor(idx, mv));
+                    }
+                })
+            });
+            let edge_b = s.spawn(|| {
+                build_pdb(EDGE_SIZE, edge_index_b(&SOLVED), |idx, out| {
+                    for mv in 0..18usize {
+                        out.push(edge_tabs.neighbor(idx, mv));
+                    }
+                })
+            });
+            // edge_a runs on this thread while the two spawned builds run in parallel.
+            let edge_a = build_pdb(EDGE_SIZE, edge_index_a(&SOLVED), |idx, out| {
+                for mv in 0..18usize {
+                    out.push(edge_tabs.neighbor(idx, mv));
+                }
+            });
+            // `join` propagates a panic from either worker thread.
+            (corner.join().unwrap(), edge_a, edge_b.join().unwrap())
         });
 
         Pdbs {
