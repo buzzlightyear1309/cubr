@@ -17,6 +17,7 @@ This README documents Stage 1 and, critically, the **cube-state JSON contract** 
 - All 18 standard moves: `U U' U2  D D' D2  L L' L2  R R' R2  F F' F2  B B' B2`.
 - Smooth animation when a move is applied.
 - A UI panel with a button for each move.
+- A **Solve** panel: computes the **guaranteed-optimal** (fewest-move) solution for the current cube with an in-app Korf solver, and animates it on **Run**. The pattern databases (~85 MB) are generated on first launch and cached to disk — they are *not* bundled with the app.
 - A lightweight HTTP API on `localhost:3000`:
   - `POST /move` — apply a single animated move.
   - `POST /state` — set the entire cube to an arbitrary state instantly (no animation).
