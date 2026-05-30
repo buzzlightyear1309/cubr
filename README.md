@@ -224,3 +224,7 @@ and verifies that scrambles solve in the minimum number of moves.
 [Rust](https://www.rust-lang.org/) (2021) · [Bevy 0.18](https://bevyengine.org/) ·
 [`tiny_http`](https://crates.io/crates/tiny_http) · [`serde`](https://serde.rs/) ·
 [`kewb`](https://crates.io/crates/kewb) (cube model).
+
+## License
+
+Released under the [MIT License](LICENSE).
