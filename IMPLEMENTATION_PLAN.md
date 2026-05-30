@@ -164,8 +164,12 @@ pub struct CoreCubie {
 // cube/mod.rs
 #[derive(Resource)] pub struct Cube(pub CubeCore);              // the live core
 #[derive(Resource, Default)] pub struct MoveQueue(pub std::collections::VecDeque<Move>);
-#[derive(Event)] pub struct ApplyState(pub CubeState);          // request an instant repaint
-#[derive(Event)] pub struct CoreChanged;                        // core mutated -> sync visuals
+// NOTE (Bevy 0.18): buffered "events" were renamed to "messages" — `#[derive(Event)]`
+// is now the observer/trigger path. These two are buffered, so they use `Message`,
+// are registered with `app.add_message::<T>()`, written with `MessageWriter<T>`, read
+// with `MessageReader<T>`, and gated with `on_message::<T>`. (Amended after Phase 2.)
+#[derive(Message)] pub struct ApplyState(pub CubeState);        // request an instant repaint
+#[derive(Message)] pub struct CoreChanged;                      // core mutated -> sync visuals
 
 // cube/spawn.rs
 #[derive(Component)] pub struct Cubie { pub home: IVec3 }       // links entity <-> core cubie
