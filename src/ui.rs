@@ -1,8 +1,8 @@
 use bevy::prelude::*;
 
 use crate::camera::OrbitCamera;
-use crate::cube::model::{Move, Turn};
-use crate::cube::MoveQueue;
+use crate::cube::model::{CubeState, Move, Turn};
+use crate::cube::{ApplyState, MoveQueue};
 use crate::view_relative::{relative_move, RelFace};
 
 /// Native bevy_ui panel feeding the shared `MoveQueue`, with a header toggle
@@ -32,6 +32,7 @@ impl Plugin for UiPlugin {
                     handle_buttons,
                     handle_relative_buttons,
                     handle_scheme_toggle,
+                    handle_reset,
                     update_panel_visibility.run_if(resource_changed::<ControlScheme>),
                 ),
             );
@@ -49,6 +50,10 @@ enum ControlScheme {
 /// A header toggle button; remembers which scheme it selects.
 #[derive(Component, Clone, Copy)]
 struct SchemeToggle(ControlScheme);
+
+/// The "Reset" button: restores solved faces + the starting camera, instantly.
+#[derive(Component)]
+struct ResetButton;
 
 /// Marker on the absolute-grid (Standard) container.
 #[derive(Component)]
@@ -137,6 +142,10 @@ fn spawn_panel(mut commands: Commands) {
                     spawn_toggle(header, ControlScheme::Beginner, "Beginner");
                 });
 
+            // 1b. Reset row: one full-header-width button that restores solved
+            //     faces + the starting camera, instantly.
+            spawn_reset_button(panel);
+
             // 2. Standard grid (visible by default): the existing 6×3 absolute
             //    buttons. `Move::ALL` is already grouped U,U',U2, D,..., B,B',B2.
             panel
@@ -216,6 +225,37 @@ fn spawn_toggle(parent: &mut ChildSpawnerCommands, scheme: ControlScheme, label:
         .with_children(|button| {
             button.spawn((
                 Text::new(label),
+                TextFont {
+                    font_size: LABEL_FONT_SIZE,
+                    ..default()
+                },
+                TextColor(LABEL_COLOR),
+            ));
+        });
+}
+
+/// Spawn the full-width "Reset" button, sized to span the two header toggles +
+/// their 6px gap so it lines up with the header row above the grids.
+fn spawn_reset_button(parent: &mut ChildSpawnerCommands) {
+    parent
+        .spawn((
+            Button,
+            ResetButton,
+            Node {
+                width: Val::Px(2.0 * TOGGLE_WIDTH + 6.0),
+                height: Val::Px(BUTTON_HEIGHT),
+                border: UiRect::all(Val::Px(1.0)),
+                border_radius: BorderRadius::all(Val::Px(5.0)),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            BackgroundColor(BTN_NORMAL),
+            BorderColor::all(BTN_BORDER),
+        ))
+        .with_children(|button| {
+            button.spawn((
+                Text::new("Reset"),
                 TextFont {
                     font_size: LABEL_FONT_SIZE,
                     ..default()
@@ -369,6 +409,34 @@ fn handle_scheme_toggle(
     for (interaction, toggle) in &interactions {
         if *interaction == Interaction::Pressed {
             *scheme = toggle.0;
+        }
+    }
+}
+
+/// On press, restore the cube to solved faces and the camera to its starting
+/// angle/position, instantly. The solved repaint goes through `ApplyState` (the
+/// same sanctioned path as `POST /state`), which clears the queue + any in-flight
+/// move; the camera resets via `OrbitCamera::default()`. Same per-state color
+/// feedback as the move buttons. The `With<ResetButton>` filter keeps this query
+/// disjoint from the move/toggle handlers.
+#[allow(clippy::type_complexity)]
+fn handle_reset(
+    mut interactions: Query<
+        (&Interaction, &mut BackgroundColor),
+        (Changed<Interaction>, With<ResetButton>),
+    >,
+    mut apply: MessageWriter<ApplyState>,
+    mut orbit: ResMut<OrbitCamera>,
+) {
+    for (interaction, mut bg) in &mut interactions {
+        match *interaction {
+            Interaction::Pressed => {
+                apply.write(ApplyState(CubeState::solved()));
+                *orbit = OrbitCamera::default();
+                bg.0 = BTN_PRESSED;
+            }
+            Interaction::Hovered => bg.0 = BTN_HOVER,
+            Interaction::None => bg.0 = BTN_NORMAL,
         }
     }
 }
