@@ -1,6 +1,8 @@
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
 use bevy::prelude::*;
 
+use crate::swipe::DragState;
+
 /// Orbit camera: left-drag rotate (ignored over UI) + wheel zoom.
 pub struct CameraPlugin;
 
@@ -105,9 +107,14 @@ fn orbit_camera(
     buttons: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
     interactions: Query<&Interaction>,
+    drag: Option<Res<DragState>>,
     mut orbit: ResMut<OrbitCamera>,
 ) {
     if !buttons.pressed(MouseButton::Left) {
+        return;
+    }
+    // A drag that began on the cube turns a layer (swipe), so don't orbit.
+    if drag.is_some_and(|d| d.pressing_cube) {
         return;
     }
     // Don't orbit when the drag is happening over UI (button panel, etc.).

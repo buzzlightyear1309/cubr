@@ -1,14 +1,17 @@
+use bevy::picking::mesh_picking::MeshPickingPlugin;
 use bevy::prelude::*;
 
 mod api;
 mod camera;
 mod cube;
+mod swipe;
 mod ui;
 mod view_relative;
 
 use api::ApiPlugin;
 use camera::CameraPlugin;
 use cube::CubePlugin;
+use swipe::SwipePlugin;
 use ui::UiPlugin;
 
 fn main() {
@@ -21,6 +24,13 @@ fn main() {
             }),
             ..default()
         }))
-        .add_plugins((CubePlugin, CameraPlugin, UiPlugin, ApiPlugin))
+        .add_plugins((
+            CubePlugin,
+            CameraPlugin,
+            UiPlugin,
+            ApiPlugin,
+            MeshPickingPlugin,
+            SwipePlugin,
+        ))
         .run();
 }
