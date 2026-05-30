@@ -1,7 +1,6 @@
 //! View-relative move mapping: turn a face named relative to the current camera
 //! view into one of the 18 absolute `Move`s. Pure (no Bevy systems) so it is
 //! unit-tested directly. Consumed by the Beginner panel in `ui.rs` (next unit).
-#![allow(dead_code)] // wired up by ui.rs in the following unit
 
 use bevy::math::Vec3;
 
