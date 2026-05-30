@@ -14,11 +14,11 @@
 // -axis side — see `swipe_to_move`.
 
 use bevy::prelude::*;
-use bevy::picking::events::{DragEnd, Pointer, Press, Release};
+use bevy::picking::events::{Cancel, DragEnd, Pointer, Press, Release};
 
 use crate::cube::model::{Face, Move, Turn};
 use crate::cube::spawn::{Cubie, Sticker};
-use crate::cube::MoveQueue;
+use crate::cube::{Cube, MoveQueue};
 
 /// Swipe/flick a visible layer to turn it. Feeds the same `MoveQueue` as the
 /// buttons; never touches the frozen engine beyond `queue.0.push_back(<Move>)`.
@@ -50,6 +50,7 @@ impl Plugin for SwipePlugin {
         app.init_resource::<DragState>()
             .add_observer(on_press)
             .add_observer(on_release)
+            .add_observer(on_cancel)
             .add_observer(on_drag_end);
     }
 }
@@ -61,22 +62,35 @@ impl Plugin for SwipePlugin {
 fn on_press(
     press: On<Pointer<Press>>,
     stickers: Query<(&Sticker, &ChildOf)>,
-    cubies: Query<&GlobalTransform, With<Cubie>>,
+    cubies: Query<(&GlobalTransform, &Cubie)>,
+    cube: Res<Cube>,
     mut drag: ResMut<DragState>,
 ) {
     let target = press.original_event_target();
     let Ok((sticker, child_of)) = stickers.get(target) else {
         return;
     };
-    let Ok(cubie_xf) = cubies.get(child_of.parent()) else {
+    let Ok((cubie_xf, cubie)) = cubies.get(child_of.parent()) else {
         return;
     };
+    // The grabbed face = the sticker's outward normal in world space, snapped to a
+    // face. Uses the live rotation so it tracks the cubie even mid-animation.
     let world_n = cubie_xf.rotation() * sticker.local_normal.as_vec3();
     let face = nearest_face(world_n);
-    let t = cubie_xf.translation();
-    let cubie_pos = IVec3::new(t.x.round() as i32, t.y.round() as i32, t.z.round() as i32);
+    // The grabbed cubie's CURRENT grid cell, read from the source of truth — not
+    // `round(translation)`, which is mid-rotation while a prior swipe is still
+    // animating and would mis-identify the layer. Exact for idle, scrambled, and
+    // in-flight states alike.
+    let Some(core) = cube.0.cubies().iter().find(|c| c.home == cubie.home) else {
+        return;
+    };
+    let cubie_pos = core.pos;
     let p = press.event();
-    let hit_world = p.event.hit.position.unwrap_or(t + world_n);
+    let hit_world = p
+        .event
+        .hit
+        .position
+        .unwrap_or(cubie_xf.translation() + world_n);
     drag.grab = Some(CubeGrab {
         face,
         cubie_pos,
@@ -88,6 +102,14 @@ fn on_press(
 /// Any release ends the press (re-enables orbit). Fires before DragEnd.
 fn on_release(_release: On<Pointer<Release>>, mut drag: ResMut<DragState>) {
     drag.pressing_cube = false;
+}
+
+/// A cancelled pointer (window focus loss / touch cancel mid-drag) emits no
+/// Release or DragEnd, so clear the state here too — otherwise `pressing_cube`
+/// would stay set and orbit would be suppressed for the rest of the session.
+fn on_cancel(_cancel: On<Pointer<Cancel>>, mut drag: ResMut<DragState>) {
+    drag.pressing_cube = false;
+    drag.grab = None;
 }
 
 /// Drag that began on the cube: project the screen drag onto the face's two
