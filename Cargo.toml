@@ -1,8 +1,8 @@
 [package]
-name = "cube"
+name = "cubr"
 version = "0.1.0"
 edition = "2021"
-description = "Interactive 3x3x3 Rubik's cube (Bevy) with a local HTTP control API"
+description = "Interactive 3x3x3 Rubik's cube in Bevy, with a guaranteed-optimal solver and a local HTTP control API"
 
 [dependencies]
 bevy = "0.18"

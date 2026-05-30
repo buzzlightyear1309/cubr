@@ -22,7 +22,7 @@ fn main() {
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                title: "Cube".to_string(),
+                title: "cubr".to_string(),
                 resolution: (1280, 720).into(),
                 ..default()
             }),

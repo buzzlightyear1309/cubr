@@ -1,7 +1,7 @@
 //! Versioned, std-only disk cache for the three Korf pattern databases.
 //!
 //! The PDBs are large (~85 MB packed) and slow to generate, so we build once and cache
-//! to `~/.cache/cube/korf-pdb.bin`. A stale cache written under a *different* edge split
+//! to `~/.cache/cubr/korf-pdb.bin`. A stale cache written under a *different* edge split
 //! / index formula / move convention would silently produce wrong (non-optimal or
 //! incorrect) solutions, so the file carries a [`CACHE_VERSION`] that MUST be bumped on
 //! any such change, plus exact-length validation. Any mismatch / short read / IO error
@@ -39,11 +39,11 @@ fn edge_packed_len() -> usize {
 /// with filename [`FILENAME`].
 pub(crate) fn cache_path() -> PathBuf {
     let dir = if let Some(xdg) = std::env::var_os("XDG_CACHE_HOME").filter(|s| !s.is_empty()) {
-        PathBuf::from(xdg).join("cube")
+        PathBuf::from(xdg).join("cubr")
     } else if let Some(home) = std::env::var_os("HOME").filter(|s| !s.is_empty()) {
-        PathBuf::from(home).join(".cache").join("cube")
+        PathBuf::from(home).join(".cache").join("cubr")
     } else {
-        std::env::temp_dir().join("cube")
+        std::env::temp_dir().join("cubr")
     };
     dir.join(FILENAME)
 }
