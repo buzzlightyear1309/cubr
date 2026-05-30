@@ -1,11 +1,6 @@
 //! The three Korf pattern databases (one corner PDB + two 6-edge PDBs) and the
 //! max-heuristic that combines them. Pure, no Bevy.
 //!
-//! Nothing here is wired into the live solver yet (Unit K2 — generation, heuristic,
-//! and the cache primitives in [`crate::solver::cache`]). The existing kewb two-phase
-//! `solve` keeps working; allow `dead_code` at the module level so the `-D warnings`
-//! gate stays green until Unit K4 consumes this.
-//!
 //! ## Index formulas
 //! - **Corner** (`CORNER_SIZE = 40320·2187`): `perm_rank8(cp)·2187 + corner_ori_rank(co)`.
 //! - **Edge, per group of 6** (`EDGE_SIZE = 665280·64`): rank only the six group
@@ -180,7 +175,7 @@ pub(crate) struct Pdbs {
 
 impl Pdbs {
     /// Build all three databases from scratch. SLOW (~1–3 min single-threaded; the
-    /// corner PDB is the long pole). The caller caches the result to disk (Unit K4).
+    /// corner PDB is the long pole). The caller caches the result to disk.
     pub(crate) fn generate() -> Pdbs {
         use super::coords::build_pdb;
 

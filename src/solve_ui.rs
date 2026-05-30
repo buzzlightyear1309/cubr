@@ -272,8 +272,13 @@ fn poll_solve_task(
         return;
     };
     if let Some(result) = block_on(future::poll_once(&mut task.task)) {
+        // If a repaint (Reset / POST /state) superseded this solve in the same frame,
+        // `clear_solution_on_repaint` reset the status away from `Solving`; discard the
+        // now-stale result rather than overwriting the repainted panel. The Update
+        // systems are unordered, so guard on the status, not on run order.
+        let superseded = solution.status != SolveStatus::Solving;
         match result {
-            Ok(moves) => {
+            Ok(moves) if !superseded => {
                 solution.status = if moves.is_empty() {
                     SolveStatus::AlreadySolved
                 } else {
@@ -283,13 +288,12 @@ fn poll_solve_task(
                 solution.current = None;
                 solution.run_total = 0;
             }
-            Err(solver::SolveError::Unsolvable) => {
+            Err(solver::SolveError::Unsolvable) if !superseded => {
                 solution.moves.clear();
                 solution.status = SolveStatus::Unsolvable;
             }
-            Err(solver::SolveError::Cancelled) => {
-                // A repaint already reset the panel; nothing to do.
-            }
+            // Cancelled, or superseded by a repaint: discard the result.
+            _ => {}
         }
         commands.remove_resource::<SolveTask>();
     }

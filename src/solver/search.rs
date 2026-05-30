@@ -6,10 +6,6 @@
 //! plain iterative-deepening DFS that is still optimal). Optimality holds for **any**
 //! admissible `h`; `h` only changes how much of the tree we prune, never the length of
 //! the answer.
-//!
-//! Nothing here is wired into the live solver yet — the existing kewb two-phase `solve`
-//! keeps working until Unit K4. Allow `dead_code` at the module level so the
-//! `-D warnings` gate stays green until then.
 
 use super::coords::{apply, index_to_move, Cubies, SOLVED};
 use super::pdb::Pdbs;

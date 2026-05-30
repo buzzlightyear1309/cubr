@@ -6,9 +6,6 @@
 //! incorrect) solutions, so the file carries a [`CACHE_VERSION`] that MUST be bumped on
 //! any such change, plus exact-length validation. Any mismatch / short read / IO error
 //! makes [`load`] return `None` so the caller regenerates.
-//!
-//! Not yet wired into the live solver (Unit K2 provides the primitives; `build_or_load`
-//! and the public `solve` rewrite are Unit K4).
 
 use super::pdb::{Pdbs, CORNER_SIZE, EDGE_SIZE};
 use std::fs;

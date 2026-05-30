@@ -2,8 +2,8 @@
 //! that reproduces kewb's `Mul` exactly, generic factorial-base ranking/unranking
 //! primitives, and a generic nibble-packed BFS pattern-database generator.
 //!
-//! Nothing here is wired into the live solver yet (Unit K1). The kewb crate is used
-//! only as the *reference* in tests; the runtime math is entirely on our own arrays.
+//! The kewb crate is used only as the *reference* in tests; the runtime math is
+//! entirely on our own arrays.
 //!
 //! ## Cube model and parity convention
 //! We match the kewb cubie model exactly so that pattern databases and the eventual
