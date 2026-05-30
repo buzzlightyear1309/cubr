@@ -2,12 +2,18 @@
 // requests here (so no cross-thread response round-trip is needed), and hands
 // validated `Cmd`s to Bevy over the mpsc channel.
 
+use std::io::Read;
 use std::sync::mpsc::Sender;
 
 use tiny_http::{Method, Response, Server};
 
 use crate::api::types::{Cmd, MoveRequest};
 use crate::cube::model::{CubeState, Move};
+
+/// Cap on the request body we'll read. A valid `/move` body is ~12 bytes and a
+/// `/state` body ~350 bytes, so anything past this is invalid and will simply
+/// fail JSON parsing (-> 400). Bounds the read so a huge body can't exhaust RAM.
+const MAX_BODY_BYTES: u64 = 64 * 1024;
 
 /// Bind 127.0.0.1:3000 and serve forever. On bind failure, log and return so
 /// the thread exits cleanly (the app keeps running without the API).
@@ -24,7 +30,10 @@ pub fn run(tx: Sender<Cmd>) {
         // Read the body up front; on a read error treat it as empty so the
         // route handlers produce a clean 400 rather than panicking.
         let mut body = String::new();
-        let _ = request.as_reader().read_to_string(&mut body);
+        let _ = request
+            .as_reader()
+            .take(MAX_BODY_BYTES)
+            .read_to_string(&mut body);
 
         let response = match (request.method(), request.url()) {
             (&Method::Post, "/move") => handle_move(&tx, &body),

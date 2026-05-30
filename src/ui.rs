@@ -55,6 +55,10 @@ fn spawn_panel(mut commands: Commands) {
                 ..default()
             },
             BackgroundColor(PANEL_BG),
+            // Gives the panel background an `Interaction` so the camera's
+            // `pointer_over_ui` guard ignores drags on the padding/gaps (only
+            // `Button` nodes get an `Interaction` automatically).
+            Interaction::default(),
         ))
         .with_children(|panel| {
             // `Move::ALL` is already grouped U,U',U2, D,..., B,B',B2 — chunk into

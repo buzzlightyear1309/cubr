@@ -37,7 +37,9 @@ fn drain_commands(
     mut queue: ResMut<MoveQueue>,
     mut apply: MessageWriter<ApplyState>,
 ) {
-    let rx = receiver.0.lock().expect("command channel mutex poisoned");
+    let Ok(rx) = receiver.0.lock() else {
+        return; // poisoned mutex: skip this frame rather than crash
+    };
     while let Ok(cmd) = rx.try_recv() {
         match cmd {
             Cmd::Move(m) => queue.0.push_back(m),

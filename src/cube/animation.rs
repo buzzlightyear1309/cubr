@@ -146,36 +146,13 @@ pub fn apply_state(
     mut active: ResMut<ActiveMove>,
     mut core_changed: MessageWriter<CoreChanged>,
 ) {
-    let mut changed = false;
-    // Apply the latest requested state (intermediate ones would be overwritten
-    // anyway), but drain the reader so events aren't reprocessed next frame.
-    for ApplyState(state) in events.read() {
+    // Apply only the latest requested state (intermediate ones would be
+    // overwritten anyway); `.read().last()` still fully drains the reader so
+    // events aren't reprocessed next frame.
+    if let Some(ApplyState(state)) = events.read().last() {
         cube.0.paint(state);
-        changed = true;
-    }
-    if changed {
         queue.0.clear();
         active.0 = None;
         core_changed.write(CoreChanged);
-    }
-}
-
-// DEBUG self-test keybind — Phase 5 (UI) and Phase 6 (API) are the real drivers.
-// Press R / U / F to enqueue the corresponding clockwise move.
-pub fn debug_keybind(keys: Res<ButtonInput<KeyCode>>, mut queue: ResMut<MoveQueue>) {
-    if keys.just_pressed(KeyCode::KeyR) {
-        if let Some(m) = Move::parse("R") {
-            queue.0.push_back(m);
-        }
-    }
-    if keys.just_pressed(KeyCode::KeyU) {
-        if let Some(m) = Move::parse("U") {
-            queue.0.push_back(m);
-        }
-    }
-    if keys.just_pressed(KeyCode::KeyF) {
-        if let Some(m) = Move::parse("F") {
-            queue.0.push_back(m);
-        }
     }
 }

@@ -183,14 +183,26 @@ The HTTP server is intended to run on its own thread and hand commands to Bevy o
 
 ## Build & run
 
-> Not yet implemented. Once Stage 1 exists:
-
 ```bash
 cargo run
 ```
 
-This opens the cube window and starts the API on `localhost:3000`. Apply a move from the command line:
+This opens the cube window and starts the HTTP API on `localhost:3000`. In the window you can orbit the view by left-dragging, zoom with the mouse wheel, and apply any move with the on-screen button panel.
+
+Apply a move from the command line (animated):
 
 ```bash
 curl -X POST localhost:3000/move -H 'Content-Type: application/json' -d '{"move":"R"}'
+```
+
+Set the entire cube to an arbitrary state instantly (no animation) — the body is the [cube-state JSON](#cube-state-json-contract):
+
+```bash
+curl -X POST localhost:3000/state -H 'Content-Type: application/json' -d @state.json
+```
+
+Run the cube-core test suite (no rendering needed):
+
+```bash
+cargo test
 ```

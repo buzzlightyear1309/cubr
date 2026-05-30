@@ -1,6 +1,5 @@
 // Cube plugin: owns the core resources/events and (Phase 2) the spawn + sync +
 // lighting wiring. Animation (Phase 4) registers itself separately later.
-#![allow(dead_code)]
 
 use bevy::prelude::*;
 
@@ -9,7 +8,7 @@ pub mod core;
 pub mod model;
 pub mod spawn;
 
-use self::animation::{animate_move, apply_state, debug_keybind, start_move, ActiveMove};
+use self::animation::{animate_move, apply_state, start_move, ActiveMove};
 use self::core::CubeCore;
 use self::model::{CubeState, Move};
 use self::spawn::{spawn_cubies, sync_visuals, CubeMaterials};
@@ -57,12 +56,17 @@ impl Plugin for CubePlugin {
             // Phase 4: drive the move queue + animation. `start_move` pops/applies
             // and snapshots; `animate_move` eases the visual and fires
             // `CoreChanged` on completion; `apply_state` handles instant repaints.
+            .add_systems(Update, (start_move, animate_move, apply_state).chain())
+            // On every later mutation, snap visuals back onto the core. Ordered
+            // after the writers so a `CoreChanged` emitted this frame is seen
+            // the same frame — entities snap onto the grid with no float lag.
             .add_systems(
                 Update,
-                (start_move, animate_move, apply_state, debug_keybind),
-            )
-            // On every later mutation, snap visuals back onto the core.
-            .add_systems(Update, sync_visuals.run_if(on_message::<CoreChanged>));
+                sync_visuals
+                    .run_if(on_message::<CoreChanged>)
+                    .after(animate_move)
+                    .after(apply_state),
+            );
     }
 }
 
