@@ -16,6 +16,8 @@
 
 use crate::cube::model::{CubeState, Face, Move, StickerColor, Turn};
 
+mod coords;
+
 pub use kewb::DataTable;
 
 /// Error from solving. `Unsolvable` covers physically impossible / unparseable states
