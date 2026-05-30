@@ -1,105 +1,170 @@
-# Cube
+# cubr
 
-A Rubik's cube project in three stages:
+**An interactive 3×3×3 Rubik's cube in Rust + [Bevy](https://bevyengine.org/) — drag to turn the layers, solve it in the fewest possible moves, and drive it over a small local HTTP API.**
 
-1. **Cube game (this repo, Stage 1)** — a Rust + [Bevy](https://bevyengine.org/) app that renders an interactive 3×3×3 cube, animates moves, and exposes a small local HTTP API for external control.
-2. **Python CV app (Stage 2)** — a computer-vision app that reads a physical cube and feeds its state into this game via the HTTP API.
-3. **Solver (Stage 3)** — a Rust solver, integrated into the workflow to produce move sequences for a given state.
+![Rust](https://img.shields.io/badge/Rust-2021-DEA584?logo=rust&logoColor=white)
+![Bevy](https://img.shields.io/badge/Bevy-0.18-232326)
+![Platform](https://img.shields.io/badge/platform-macOS%20%C2%B7%20Linux%20%C2%B7%20Windows-555)
 
-This README documents Stage 1 and, critically, the **cube-state JSON contract** that Stages 2 and 3 rely on. Stage 1 is built and working; the sections below are both its spec and the binding contract the later stages depend on.
+![cubr — an optimal solve, animated](docs/demo.gif)
+
+`cubr` renders a fully interactive 3×3×3 cube, animates all 18 face turns, computes the **optimal
+(fewest-move) solution** for any reachable state, and exposes an HTTP API so external tools can read
+and set the cube.
 
 ---
 
 ## Features
 
-- Fully rendered 3×3×3 cube in 3D with correct face colors.
-- Orbit camera: rotate the view by left-dragging, zoom with the mouse wheel.
-- All 18 standard moves: `U U' U2  D D' D2  L L' L2  R R' R2  F F' F2  B B' B2`.
-- Smooth animation when a move is applied.
-- A UI panel with a button for each move.
-- A **Solve** panel: computes the **guaranteed-optimal** (fewest-move) solution for the current cube with an in-app Korf solver, and animates it on **Run**. The pattern databases (~85 MB) are generated on first launch and cached to disk — they are *not* bundled with the app.
-- A lightweight HTTP API on `localhost:3000`:
-  - `POST /move` — apply a single animated move.
-  - `POST /state` — set the entire cube to an arbitrary state instantly (no animation).
+- **Full 3×3×3 in 3D**, all 18 turns (`U D L R F B`, each `· ' 2`) with smooth ~0.25 s animation.
+- **Two ways to turn**: grab a visible layer and flick it (mesh-picked swipe), or use the on-screen
+  move panel.
+- **Orbit camera** — a re-basing turntable that keeps the horizon level as you tumble (the "pole"
+  follows the nearest cube axis), plus wheel zoom and an `L`-to-level shortcut.
+- **Standard & Beginner control schemes** — the move panel can show absolute notation (`R`, `U'`,
+  `F2`) or view-relative words (`Front CW`, `Up 180`) that track the camera.
+- **Guaranteed-optimal solver** — Korf's IDA\* with pattern databases; every solution is the true
+  minimum, ≤ 20 face turns. See [Solving](#solving).
+- **Local HTTP control API** — `POST /move` and `POST /state` on `localhost:3000`. See
+  [HTTP API](#http-api).
+- **Reset** to a solved cube and the starting camera.
 
----
+## Controls
 
-## Conventions
+| Input | Action |
+|-------|--------|
+| Left-drag empty space | Orbit the camera |
+| Left-drag a sticker | Turn that layer (swipe) |
+| Mouse wheel | Zoom |
+| `L` | Snap the camera back to level / upright |
+| Left panel | Per-move buttons (Standard or Beginner scheme) + **Reset** |
+| Right panel | **Solve** (compute the optimal solution) + **Run** (animate it) |
 
-These conventions are the source of truth. The renderer, the move engine, the HTTP API, and any external client (Python CV app, solver) must all agree on them.
+![The cubr window: move panel + Reset on the left, Solve/Run on the right](docs/cubr.png)
 
-### Faces
+## Quick start
 
-The six faces use standard single-letter names:
+Prerequisites: a stable Rust toolchain ([rustup](https://rustup.rs/)).
 
-| Letter | Face   | Solved color   |
-|--------|--------|----------------|
-| `U`    | Up     | White  (`W`)   |
-| `D`    | Down   | Yellow (`Y`)   |
-| `F`    | Front  | Green  (`G`)   |
-| `B`    | Back   | Blue   (`B`)   |
-| `R`    | Right  | Red    (`R`)   |
-| `L`    | Left   | Orange (`O`)   |
+```bash
+cargo run --release
+```
 
-This is the standard Western / BOY scheme: **white up, green front**. With white on top and green facing you, red is on the right, orange on the left, blue at the back, yellow on the bottom.
+This opens the cube window and starts the HTTP API on `localhost:3000`. On the **first launch** the
+solver builds its pattern databases (~85 MB) in the background — a one-time cost of roughly 20 s in a
+release build — and caches them under `~/.cache/cubr/`; subsequent launches load them in well under a
+second. (The cache is generated on your machine, never bundled.)
 
-### Colors
+Apply a move from the command line while the app is running:
 
-Stickers are described with single-letter color codes, independent of face position (so a scrambled cube can be expressed):
+```bash
+curl -X POST localhost:3000/move -H 'Content-Type: application/json' -d '{"move":"R"}'
+```
 
-| Code | Color  |
-|------|--------|
-| `W`  | White  |
-| `Y`  | Yellow |
-| `R`  | Red    |
-| `O`  | Orange |
-| `B`  | Blue   |
-| `G`  | Green  |
+> Developed and tested on macOS; Bevy targets macOS, Linux, and Windows.
 
-### Coordinate system (for the implementation)
+## Solving
+
+`cubr` doesn't just find *a* solution — it finds an **optimal** one, every time.
+
+- **Color scheme**: the standard Western / BOY layout — white `U` on top, green `F` in front, so red
+  is right, orange left, blue back, yellow bottom.
+- **Metric**: the half-turn metric (HTM); the 18 moves are the six faces × {90° CW, 90° CCW, 180°}.
+- **Algorithm**: Herbert Kociemba / Richard Korf style **iterative-deepening A\*** guided by three
+  additive-style pattern databases — one over all eight corners (permutation × orientation), and two
+  over disjoint groups of six edges (positions × orientation) — combined as a *max-of-three*
+  admissible heuristic. Because the heuristic never overestimates, IDA\* returns a provably
+  shortest move sequence (God's number for the 3×3×3 is 20 HTM, so solutions are always ≤ 20).
+- **Notation**: solutions render as Standard notation (`R U R' U'`) or, in Beginner mode, as
+  view-relative steps (`Front CW`, `Up 180`) that re-label live as you orbit. **Run** animates the
+  solution one move at a time and highlights the current step.
+- **Performance**: most states solve in milliseconds; the rare deepest (distance ~18–20) states can
+  take a few seconds. The solve runs off the render thread, so the window stays responsive, and a
+  Reset cancels an in-flight solve.
+
+## HTTP API
+
+JSON in, JSON out, on `http://localhost:3000`. The server runs on its own thread and hands commands to
+the renderer over a channel, so the render loop never blocks.
+
+### `POST /move`
+
+Apply a single animated move. Body:
+
+```json
+{ "move": "R" }
+```
+
+`move` is one of the 18 strings `U U' U2  D D' D2  L L' L2  R R' R2  F F' F2  B B' B2`. Responds
+`200 OK`, or `400` with a message for an unknown move.
+
+### `POST /state`
+
+Set the entire cube instantly (no animation) — used to mirror an externally-tracked cube. The body is
+the [cube-state JSON](#cube-state-format). Responds `200 OK`, or `400` if the body is malformed. The
+endpoint paints the stickers exactly as given, so even physically impossible arrangements render.
+
+```bash
+curl -X POST localhost:3000/state -H 'Content-Type: application/json' -d @state.json
+```
+
+## Cube-state format
+
+This is the exact shape of `POST /state`, and the canonical representation any external client should
+produce or consume. It is the binding contract — the renderer, the move engine, the solver, and any
+HTTP client all agree on it.
+
+A state is a JSON object with one key per face. Each value is an array of **9 color codes** in
+**row-major order** (top-left → bottom-right) as the face is viewed in its standard orientation.
+
+### Faces and colors
+
+| Letter | Face | Solved color | | Code | Color |
+|--------|------|--------------|-|------|-------|
+| `U` | Up | White (`W`) | | `W` | White |
+| `D` | Down | Yellow (`Y`) | | `Y` | Yellow |
+| `F` | Front | Green (`G`) | | `R` | Red |
+| `B` | Back | Blue (`B`) | | `O` | Orange |
+| `R` | Right | Red (`R`) | | `B` | Blue |
+| `L` | Left | Orange (`O`) | | `G` | Green |
+
+Color codes are independent of face position, so a scrambled (or impossible) cube can be expressed.
+
+### Coordinate system
 
 Right-handed axes, cube centered at the origin, each cubie one unit:
 
-- `+X` → Right (`R` face), `-X` → Left (`L` face)
-- `+Y` → Up (`U` face),    `-Y` → Down (`D` face)
-- `+Z` → Front (`F` face), `-Z` → Back (`B` face)
+- `+X` → Right (`R`), `-X` → Left (`L`)
+- `+Y` → Up (`U`),    `-Y` → Down (`D`)
+- `+Z` → Front (`F`), `-Z` → Back (`B`)
 
-A clockwise face turn (`U`, `R`, `F`, …) is clockwise **as seen looking directly at that face from outside the cube**. A `'` (prime) is counter-clockwise; a `2` suffix is a 180° turn.
+A bare move (`U`, `R`, `F`, …) is a 90° turn clockwise **as seen looking at that face from outside**;
+`'` is counter-clockwise; `2` is 180°.
 
----
+### Per-face read order
 
-## Cube-state JSON contract
+Each face is read holding the cube in the standard orientation (white `U` up, green `F` toward you).
+Index `0` is the top-left sticker, index `8` the bottom-right:
 
-This is the exact shape used by `POST /state`. It is also the canonical representation a solver or CV client should produce/consume.
-
-A cube state is a JSON object with one key per face. Each value is an array of **9 color codes** in **row-major order** (top-left → top-right, then down row by row) as the face is viewed in its **standard orientation**, defined below.
-
-### Per-face viewing orientation
-
-To make "row-major" unambiguous, each face is read while holding the cube in the standard orientation (white `U` on top, green `F` toward you). For each face, index `0` is the top-left sticker and index `8` is the bottom-right sticker, where "top" and "left" are:
-
-| Face | Read while looking at it from… | Index 0 (top-left) is toward… | Rows go… | Columns go… |
-|------|--------------------------------|-------------------------------|----------|-------------|
-| `U`  | above (`+Y`, looking down)     | back-left  (`-X`, `-Z`)       | back → front | left → right |
-| `D`  | below (`-Y`, looking up)       | front-left (`-X`, `+Z`)       | front → back | left → right |
-| `F`  | the front (`+Z`)               | top-left   (`+Y`, `-X`)       | top → bottom | left → right |
-| `B`  | the back (`-Z`)                | top-right* (`+Y`, `+X`)       | top → bottom | right → left |
-| `R`  | the right (`+X`)               | top-front  (`+Y`, `+Z`)       | top → bottom | front → back |
-| `L`  | the left (`-X`)                | top-back   (`+Y`, `-Z`)       | top → bottom | back → front |
-
-\* `B` is read as if you walked around to look at it head-on, so its left/right are mirrored relative to `F`. This matches the common Kociemba-style facelet layout, which the Stage 3 solver expects.
-
-Index layout within every face:
+| Face | Viewed from… | Index 0 (top-left) toward… | Rows | Columns |
+|------|--------------|----------------------------|------|---------|
+| `U` | above (`+Y`) | back-left (`-X,-Z`) | back → front | left → right |
+| `D` | below (`-Y`) | front-left (`-X,+Z`) | front → back | left → right |
+| `F` | front (`+Z`) | top-left (`+Y,-X`) | top → bottom | left → right |
+| `B` | back (`-Z`) | top-right\* (`+Y,+X`) | top → bottom | right → left |
+| `R` | right (`+X`) | top-front (`+Y,+Z`) | top → bottom | front → back |
+| `L` | left (`-X`) | top-back (`+Y,-Z`) | top → bottom | back → front |
 
 ```
 0 1 2
 3 4 5
-6 7 8
+6 7 8     (index 4 is the center, which fixes the face's solved color)
 ```
 
-Index `4` is always the center sticker, which fixes that face's solved color.
+\* `B` is read as if you walked around to face it head-on, so its left/right are mirrored relative to
+`F`. This matches the common Kociemba-style facelet layout the solver uses internally.
 
-### Solved-cube example
+### Solved example
 
 ```json
 {
@@ -112,98 +177,50 @@ Index `4` is always the center sticker, which fixes that face's solved color.
 }
 ```
 
-### Validation notes (for `POST /state`)
+Recommended (non-fatal) sanity checks a client may surface as warnings: exactly 6 face keys each with
+9 entries; every entry one of `W Y R O B G`; each color appearing exactly 9 times across the 54
+stickers.
 
-The endpoint sets the displayed stickers exactly as given, so a client can show any arrangement — including physically impossible ones — without the app rejecting it. Recommended (non-fatal) sanity checks the implementation may surface as warnings:
+## How it works
 
-- Exactly 6 face keys (`U D F B R L`), each with exactly 9 entries.
-- Each entry is one of `W Y R O B G`.
-- Each color appears exactly 9 times across all 54 stickers.
-
----
-
-## HTTP API
-
-Server listens on `http://localhost:3000`. JSON in, JSON out.
-
-### `POST /move`
-
-Apply a single move, animated.
-
-Request body:
-
-```json
-{ "move": "R" }
-```
-
-`move` is one of the 18 move strings: `U U' U2 D D' D2 L L' L2 R R' R2 F F' F2 B B' B2`.
-
-Response: `200 OK` on a valid move; `400` with an error message for an unknown move string.
-
-### `POST /state`
-
-Set the full cube state instantly, no animation. Used by the CV app to mirror a physical cube.
-
-Request body: the [cube-state JSON](#cube-state-json-contract) object above.
-
-Response: `200 OK` on success; `400` with an error message if the body is malformed.
-
----
-
-## Move notation
-
-| Suffix | Meaning                        |
-|--------|--------------------------------|
-| (none) | 90° clockwise (facing the face)|
-| `'`    | 90° counter-clockwise          |
-| `2`    | 180°                           |
-
-Faces: `U` (up), `D` (down), `L` (left), `R` (right), `F` (front), `B` (back).
-
----
-
-## Project structure
-
-Stage 1 is laid out as:
+- **`CubeCore`** is the single source of truth: a pure, integer-math model of the 26 cubies (positions
+  and orientations as integer vectors, colors riding along). No Bevy, fully unit-tested. The Bevy
+  entities *mirror* it; between moves every transform sits exactly on the integer grid / 90° multiples.
+- **Moves** are applied as integer permutations of a layer; the animation system eases the visual
+  toward the already-applied core pose, then snaps it back onto the grid.
+- **Solver** (`src/solver/`) is pure and standalone: `coords` (permutation/orientation ranking + the
+  move model), `pdb` + `cache` (the three pattern databases, nibble-packed, generated once and cached
+  to disk), and `search` (the IDA\* itself). The [`kewb`](https://crates.io/crates/kewb) crate is used
+  only as a vetted cube model for parsing/validating a facelet string; all the search math is local.
+- **API** (`src/api/`) runs `tiny_http` on a dedicated thread and forwards commands over an `mpsc`
+  channel into the Bevy world.
 
 ```
-cube/
-├── Cargo.toml
-├── README.md
-└── src/
-    ├── main.rs          # Bevy app + plugin wiring
-    ├── cube/            # cube model, move engine, spawning, animation
-    ├── camera.rs        # orbit camera controls
-    ├── ui.rs            # move-button panel
-    └── api/             # HTTP server + request/response types + Bevy bridge
+src/
+├── main.rs          # App + plugin wiring
+├── cube/            # pure CubeCore engine, move model, spawning, animation
+├── camera.rs        # re-basing turntable orbit + zoom
+├── swipe.rs         # mesh-picking drag-to-turn
+├── ui.rs            # move-button panel + control-scheme toggle + Reset
+├── view_relative.rs # view-relative move naming (Beginner scheme)
+├── solver/          # Korf optimal solver: coords, pattern DBs + cache, IDA* search
+├── solve_ui.rs      # Solve/Run panel; off-thread table build + solve
+└── api/             # HTTP server + Bevy bridge
 ```
 
-The HTTP server runs on its own thread and hands commands to Bevy over a channel, so the render loop stays non-blocking.
-
----
-
-## Build & run
+## Testing
 
 ```bash
-cargo run
+cargo test                          # fast: pure cube-core + solver correctness (no rendering)
+cargo test --release -- --ignored   # heavy: full pattern-DB builds + optimality cross-checks
 ```
 
-This opens the cube window and starts the HTTP API on `localhost:3000`. In the window you can orbit the view by left-dragging, zoom with the mouse wheel, and apply any move with the on-screen button panel.
+The fast suite includes exhaustive ranking bijections, move-model cross-checks, and an optimality
+check of the search against brute-force BFS. The `--ignored` suite builds the real ~85 MB databases
+and verifies that scrambles solve in the minimum number of moves.
 
-Apply a move from the command line (animated):
+## Built with
 
-```bash
-curl -X POST localhost:3000/move -H 'Content-Type: application/json' -d '{"move":"R"}'
-```
-
-Set the entire cube to an arbitrary state instantly (no animation) — the body is the [cube-state JSON](#cube-state-json-contract):
-
-```bash
-curl -X POST localhost:3000/state -H 'Content-Type: application/json' -d @state.json
-```
-
-Run the cube-core test suite (no rendering needed):
-
-```bash
-cargo test
-```
+[Rust](https://www.rust-lang.org/) (2021) · [Bevy 0.18](https://bevyengine.org/) ·
+[`tiny_http`](https://crates.io/crates/tiny_http) · [`serde`](https://serde.rs/) ·
+[`kewb`](https://crates.io/crates/kewb) (cube model).

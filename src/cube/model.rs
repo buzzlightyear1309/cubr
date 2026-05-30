@@ -232,9 +232,6 @@ pub struct CubeState {
 
 impl CubeState {
     /// All 9 of each face = that face's solved color.
-    // §1 public contract (used by tests + downstream stages); the Stage-1 binary
-    // builds its initial state from `CubeCore::solved()`, not this, so allow unused.
-    #[allow(dead_code)]
     pub fn solved() -> Self {
         CubeState {
             U: [Face::U.solved_color(); 9],

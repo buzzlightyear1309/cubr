@@ -1,14 +1,13 @@
-# CLAUDE.md — `cube`
+# CLAUDE.md — `cubr`
 
-Interactive 3×3×3 Rubik's cube in **Rust + Bevy 0.18**, with a local HTTP control API. This is
-**Stage 1** of a three-stage project (Stage 2: Python CV app feeds state via the API; Stage 3: Rust
-solver). Stage 1 is built and working; further work builds on it. See `README.md` for the staging
-and the binding contract.
+Interactive 3×3×3 Rubik's cube in **Rust + Bevy 0.18**, with a guaranteed-optimal solver and a local
+HTTP control API. The cube engine, the 18 moves, the animation, the solver, and the HTTP API are built
+and working; further work builds on them. See `README.md` for build/run and the HTTP API contract.
 
 ## The spec is the README — and it's binding
 `README.md` is the source of truth for the **cube-state JSON contract, color scheme, coordinate
-system, per-face read order, and HTTP semantics**. Other stages depend on these exactly. If code and
-README disagree, the README wins. Don't change the contract casually — downstream tools rely on it.
+system, per-face read order, and HTTP semantics**. External API clients depend on these exactly. If
+code and README disagree, the README wins. Don't change the contract casually — clients rely on it.
 
 ## How we work here: orchestrate, don't hand-code
 **Default behaviour for any non-trivial task in this repo.** The main agent acts as an
@@ -42,7 +41,8 @@ For each unit of work:
 - **Parallelism:** units that touch disjoint files may run as concurrent `Agent` calls; anything
   sharing files runs sequentially.
 - The pure `CubeCore`, the 18 absolute `Move`s, `MoveQueue`, the animation system, and the
-  `POST /move` / `POST /state` JSON contract are the **frozen engine** Stages 2 & 3 depend on. New
+  `POST /move` / `POST /state` JSON contract are the **frozen engine** the renderer and API clients
+  depend on. New
   work is a presentation/input layer that ends at `MoveQueue` / `ApplyState`; don't reach into the
   engine or change the contract just to add a feature.
 

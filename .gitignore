@@ -1,5 +1,6 @@
 /target
 /.idea
+.DS_Store
 
 # Local working plans (scratch, not part of the repo)
 /docs/plans/

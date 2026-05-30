@@ -78,9 +78,8 @@ impl CubeCore {
 
     /// Read the current facelets in README per-face orientation (row-major, the index
     /// layout and per-face viewing rules in README "Per-face viewing orientation").
-    // §1 public contract: state read-back for downstream stages (CV/solver); the
-    // Stage-1 binary never reads it back, so allow it to be unused here.
-    #[allow(dead_code)]
+    /// Reads the cube back into the JSON `CubeState` shape — used by the solver and the
+    /// HTTP `POST /state` read-back path.
     pub fn to_state(&self) -> CubeState {
         let mut state = CubeState::solved();
         for face in Face::ALL {
