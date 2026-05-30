@@ -5,6 +5,7 @@ mod api;
 mod camera;
 mod cube;
 mod geom;
+mod solve_ui;
 mod solver;
 mod swipe;
 mod ui;
@@ -13,6 +14,7 @@ mod view_relative;
 use api::ApiPlugin;
 use camera::CameraPlugin;
 use cube::CubePlugin;
+use solve_ui::SolverPlugin;
 use swipe::SwipePlugin;
 use ui::UiPlugin;
 
@@ -33,6 +35,7 @@ fn main() {
             ApiPlugin,
             MeshPickingPlugin,
             SwipePlugin,
+            SolverPlugin,
         ))
         .run();
 }

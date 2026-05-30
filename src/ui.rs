@@ -41,8 +41,11 @@ impl Plugin for UiPlugin {
 }
 
 /// Which control scheme is currently active. Default is `Standard`.
+///
+/// `pub(crate)` so the Solution panel (`solve_ui`) can render its step list in the
+/// active scheme's wording (Standard notation vs Beginner view-relative words).
 #[derive(Resource, Default, PartialEq, Eq, Clone, Copy)]
-enum ControlScheme {
+pub(crate) enum ControlScheme {
     #[default]
     Standard,
     Beginner,
@@ -78,15 +81,18 @@ struct RelMoveButton {
 
 // --- Styling ------------------------------------------------------------------
 
+// These styling consts are `pub(crate)` so the right-docked Solution panel
+// (`solve_ui`) reuses the exact same panel/button chrome — keeps the two panels
+// visually identical and DRY.
 /// Subtle semi-transparent dark panel background.
-const PANEL_BG: Color = Color::srgba(0.10, 0.10, 0.12, 0.85);
+pub(crate) const PANEL_BG: Color = Color::srgba(0.10, 0.10, 0.12, 0.85);
 /// Button colors for the three interaction states.
-const BTN_NORMAL: Color = Color::srgb(0.18, 0.18, 0.22);
-const BTN_HOVER: Color = Color::srgb(0.28, 0.28, 0.34);
-const BTN_PRESSED: Color = Color::srgb(0.40, 0.55, 0.85);
+pub(crate) const BTN_NORMAL: Color = Color::srgb(0.18, 0.18, 0.22);
+pub(crate) const BTN_HOVER: Color = Color::srgb(0.28, 0.28, 0.34);
+pub(crate) const BTN_PRESSED: Color = Color::srgb(0.40, 0.55, 0.85);
 /// Thin button border + label color.
-const BTN_BORDER: Color = Color::srgb(0.32, 0.32, 0.40);
-const LABEL_COLOR: Color = Color::srgb(0.92, 0.92, 0.95);
+pub(crate) const BTN_BORDER: Color = Color::srgb(0.32, 0.32, 0.40);
+pub(crate) const LABEL_COLOR: Color = Color::srgb(0.92, 0.92, 0.95);
 
 const BUTTON_WIDTH: f32 = 52.0;
 const BUTTON_HEIGHT: f32 = 32.0;
@@ -208,7 +214,10 @@ fn spawn_panel(mut commands: Commands) {
 /// Spawn a panel button: the shared chrome (size, border, colors) + a centered,
 /// non-wrapping text label, tagged with `marker`. The four button kinds differ
 /// only in width, label, and marker.
-fn spawn_labeled_button(
+///
+/// `pub(crate)` so the Solution panel (`solve_ui`) spawns its Solve/Run buttons
+/// with identical chrome.
+pub(crate) fn spawn_labeled_button(
     parent: &mut ChildSpawnerCommands,
     width: f32,
     label: impl Into<String>,
@@ -296,7 +305,10 @@ fn rel_label(rel: RelFace, turn: Turn) -> String {
 }
 
 /// The background color for a button's interaction state.
-fn set_button_color(interaction: &Interaction, bg: &mut BackgroundColor) {
+///
+/// `pub(crate)` so the Solution panel (`solve_ui`) gives its Solve/Run buttons the
+/// same per-state feedback.
+pub(crate) fn set_button_color(interaction: &Interaction, bg: &mut BackgroundColor) {
     bg.0 = match interaction {
         Interaction::Pressed => BTN_PRESSED,
         Interaction::Hovered => BTN_HOVER,
