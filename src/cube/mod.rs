@@ -35,7 +35,7 @@ pub struct ApplyState(pub CubeState);
 pub struct CoreChanged;
 
 /// Owns the cube resources/events + spawn + the sync system. (Animation is
-/// wired by Phase 4; the orbit camera by Phase 3 — see the TEMP camera below.)
+/// wired by Phase 4; the orbit camera + ambient fill by Phase 3's CameraPlugin.)
 pub struct CubePlugin;
 
 impl Plugin for CubePlugin {
@@ -52,7 +52,7 @@ impl Plugin for CubePlugin {
             .add_message::<ApplyState>()
             // Startup order: materials already exist (resource above), the cube
             // exists, so spawn then do one sync to land on the integer grid.
-            .add_systems(Startup, (spawn_lighting, spawn_temp_camera))
+            .add_systems(Startup, spawn_lighting)
             .add_systems(Startup, (spawn_cubies, sync_visuals).chain())
             // Phase 4: drive the move queue + animation. `start_move` pops/applies
             // and snapshots; `animate_move` eases the visual and fires
@@ -76,20 +76,5 @@ fn spawn_lighting(mut commands: Commands) {
             ..default()
         },
         Transform::from_xyz(5.0, 8.0, 6.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-}
-
-// TEMP static camera — Phase 3 CameraPlugin supersedes this. Positioned so white
-// `U` is up and green `F` faces the viewer. Carries an `AmbientLight` so faces
-// angled away from the key light still read clearly.
-fn spawn_temp_camera(mut commands: Commands) {
-    commands.spawn((
-        Camera3d::default(),
-        Transform::from_xyz(4.0, 4.0, 6.0).looking_at(Vec3::ZERO, Vec3::Y),
-        AmbientLight {
-            color: Color::WHITE,
-            brightness: 350.0,
-            ..default()
-        },
     ));
 }
