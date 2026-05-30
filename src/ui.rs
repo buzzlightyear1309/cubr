@@ -33,6 +33,7 @@ impl Plugin for UiPlugin {
                     handle_relative_buttons,
                     handle_scheme_toggle,
                     handle_reset,
+                    style_scheme_toggles,
                     update_panel_visibility.run_if(resource_changed::<ControlScheme>),
                 ),
             );
@@ -204,14 +205,21 @@ fn spawn_panel(mut commands: Commands) {
         });
 }
 
-/// Spawn one header toggle button labeled with its scheme name.
-fn spawn_toggle(parent: &mut ChildSpawnerCommands, scheme: ControlScheme, label: &str) {
+/// Spawn a panel button: the shared chrome (size, border, colors) + a centered,
+/// non-wrapping text label, tagged with `marker`. The four button kinds differ
+/// only in width, label, and marker.
+fn spawn_labeled_button(
+    parent: &mut ChildSpawnerCommands,
+    width: f32,
+    label: impl Into<String>,
+    marker: impl Bundle,
+) {
     parent
         .spawn((
             Button,
-            SchemeToggle(scheme),
+            marker,
             Node {
-                width: Val::Px(TOGGLE_WIDTH),
+                width: Val::Px(width),
                 height: Val::Px(BUTTON_HEIGHT),
                 border: UiRect::all(Val::Px(1.0)),
                 border_radius: BorderRadius::all(Val::Px(5.0)),
@@ -225,100 +233,6 @@ fn spawn_toggle(parent: &mut ChildSpawnerCommands, scheme: ControlScheme, label:
         .with_children(|button| {
             button.spawn((
                 Text::new(label),
-                TextFont {
-                    font_size: LABEL_FONT_SIZE,
-                    ..default()
-                },
-                TextColor(LABEL_COLOR),
-            ));
-        });
-}
-
-/// Spawn the full-width "Reset" button, sized to span the two header toggles +
-/// their 6px gap so it lines up with the header row above the grids.
-fn spawn_reset_button(parent: &mut ChildSpawnerCommands) {
-    parent
-        .spawn((
-            Button,
-            ResetButton,
-            Node {
-                width: Val::Px(2.0 * TOGGLE_WIDTH + 6.0),
-                height: Val::Px(BUTTON_HEIGHT),
-                border: UiRect::all(Val::Px(1.0)),
-                border_radius: BorderRadius::all(Val::Px(5.0)),
-                align_items: AlignItems::Center,
-                justify_content: JustifyContent::Center,
-                ..default()
-            },
-            BackgroundColor(BTN_NORMAL),
-            BorderColor::all(BTN_BORDER),
-        ))
-        .with_children(|button| {
-            button.spawn((
-                Text::new("Reset"),
-                TextFont {
-                    font_size: LABEL_FONT_SIZE,
-                    ..default()
-                },
-                TextColor(LABEL_COLOR),
-            ));
-        });
-}
-
-/// Spawn one absolute-move button (a `Button` + `Node` + colors) with a centered
-/// text label child.
-fn spawn_button(parent: &mut ChildSpawnerCommands, mv: Move) {
-    parent
-        .spawn((
-            Button,
-            MoveButton(mv),
-            Node {
-                width: Val::Px(BUTTON_WIDTH),
-                height: Val::Px(BUTTON_HEIGHT),
-                border: UiRect::all(Val::Px(1.0)),
-                border_radius: BorderRadius::all(Val::Px(5.0)),
-                align_items: AlignItems::Center,
-                justify_content: JustifyContent::Center,
-                ..default()
-            },
-            BackgroundColor(BTN_NORMAL),
-            BorderColor::all(BTN_BORDER),
-        ))
-        .with_children(|button| {
-            button.spawn((
-                Text::new(mv.notation()),
-                TextFont {
-                    font_size: LABEL_FONT_SIZE,
-                    ..default()
-                },
-                TextColor(LABEL_COLOR),
-            ));
-        });
-}
-
-/// Spawn one view-relative button (wider, to fit the full-word label on one line).
-fn spawn_relative_button(parent: &mut ChildSpawnerCommands, rel: RelFace, turn: Turn) {
-    parent
-        .spawn((
-            Button,
-            RelMoveButton { rel, turn },
-            Node {
-                width: Val::Px(BEGINNER_BUTTON_WIDTH),
-                height: Val::Px(BUTTON_HEIGHT),
-                border: UiRect::all(Val::Px(1.0)),
-                border_radius: BorderRadius::all(Val::Px(5.0)),
-                align_items: AlignItems::Center,
-                justify_content: JustifyContent::Center,
-                ..default()
-            },
-            BackgroundColor(BTN_NORMAL),
-            BorderColor::all(BTN_BORDER),
-        ))
-        .with_children(|button| {
-            button.spawn((
-                Text::new(rel_label(rel, turn)),
-                // Never wrap: the stock Bevy font has no rotation-arrow glyphs, so
-                // turns are spelled out (CW/CCW/180°) and must stay on one line.
                 TextLayout::new_with_no_wrap(),
                 TextFont {
                     font_size: LABEL_FONT_SIZE,
@@ -327,6 +241,33 @@ fn spawn_relative_button(parent: &mut ChildSpawnerCommands, rel: RelFace, turn: 
                 TextColor(LABEL_COLOR),
             ));
         });
+}
+
+/// Spawn one header toggle button labeled with its scheme name.
+fn spawn_toggle(parent: &mut ChildSpawnerCommands, scheme: ControlScheme, label: &str) {
+    spawn_labeled_button(parent, TOGGLE_WIDTH, label, SchemeToggle(scheme));
+}
+
+/// Spawn the full-width "Reset" button, sized to span the two header toggles +
+/// their 6px gap so it lines up with the header row above the grids.
+fn spawn_reset_button(parent: &mut ChildSpawnerCommands) {
+    spawn_labeled_button(parent, 2.0 * TOGGLE_WIDTH + 6.0, "Reset", ResetButton);
+}
+
+/// Spawn one absolute-move button (a `Button` + `Node` + colors) with a centered
+/// text label child.
+fn spawn_button(parent: &mut ChildSpawnerCommands, mv: Move) {
+    spawn_labeled_button(parent, BUTTON_WIDTH, mv.notation(), MoveButton(mv));
+}
+
+/// Spawn one view-relative button (wider, to fit the full-word label on one line).
+fn spawn_relative_button(parent: &mut ChildSpawnerCommands, rel: RelFace, turn: Turn) {
+    spawn_labeled_button(
+        parent,
+        BEGINNER_BUTTON_WIDTH,
+        rel_label(rel, turn),
+        RelMoveButton { rel, turn },
+    );
 }
 
 /// Full-word name for a relative face.
@@ -354,6 +295,15 @@ fn rel_label(rel: RelFace, turn: Turn) -> String {
     }
 }
 
+/// The background color for a button's interaction state.
+fn set_button_color(interaction: &Interaction, bg: &mut BackgroundColor) {
+    bg.0 = match interaction {
+        Interaction::Pressed => BTN_PRESSED,
+        Interaction::Hovered => BTN_HOVER,
+        Interaction::None => BTN_NORMAL,
+    };
+}
+
 /// React to Standard button interactions: enqueue the absolute move on the press
 /// transition and give visual feedback for the three states. `Changed<Interaction>`
 /// fires once per transition, so a click enqueues exactly one move.
@@ -365,14 +315,10 @@ fn handle_buttons(
     mut queue: ResMut<MoveQueue>,
 ) {
     for (interaction, button, mut bg) in &mut interactions {
-        match *interaction {
-            Interaction::Pressed => {
-                queue.0.push_back(button.0);
-                bg.0 = BTN_PRESSED;
-            }
-            Interaction::Hovered => bg.0 = BTN_HOVER,
-            Interaction::None => bg.0 = BTN_NORMAL,
+        if *interaction == Interaction::Pressed {
+            queue.0.push_back(button.0);
         }
+        set_button_color(interaction, &mut bg);
     }
 }
 
@@ -388,16 +334,12 @@ fn handle_relative_buttons(
     mut queue: ResMut<MoveQueue>,
 ) {
     for (interaction, button, mut bg) in &mut interactions {
-        match *interaction {
-            Interaction::Pressed => {
-                queue
-                    .0
-                    .push_back(relative_move(orbit.basis(), button.rel, button.turn));
-                bg.0 = BTN_PRESSED;
-            }
-            Interaction::Hovered => bg.0 = BTN_HOVER,
-            Interaction::None => bg.0 = BTN_NORMAL,
+        if *interaction == Interaction::Pressed {
+            queue
+                .0
+                .push_back(relative_move(orbit.basis(), button.rel, button.turn));
         }
+        set_button_color(interaction, &mut bg);
     }
 }
 
@@ -429,26 +371,21 @@ fn handle_reset(
     mut orbit: ResMut<OrbitCamera>,
 ) {
     for (interaction, mut bg) in &mut interactions {
-        match *interaction {
-            Interaction::Pressed => {
-                apply.write(ApplyState(CubeState::solved()));
-                *orbit = OrbitCamera::default();
-                bg.0 = BTN_PRESSED;
-            }
-            Interaction::Hovered => bg.0 = BTN_HOVER,
-            Interaction::None => bg.0 = BTN_NORMAL,
+        if *interaction == Interaction::Pressed {
+            apply.write(ApplyState(CubeState::solved()));
+            *orbit = OrbitCamera::default();
         }
+        set_button_color(interaction, &mut bg);
     }
 }
 
-/// Reflect the active scheme into the UI: show the matching grid, hide the other,
-/// and highlight the active toggle. Runs whenever `ControlScheme` changes —
-/// including the first frame after init, so the initial state lands correctly.
+/// Reflect the active scheme into the UI: show the matching grid, hide the other.
+/// Runs whenever `ControlScheme` changes — including the first frame after init,
+/// so the initial state lands correctly.
 fn update_panel_visibility(
     scheme: Res<ControlScheme>,
     mut standard: Query<&mut Node, (With<StandardPanel>, Without<BeginnerPanel>)>,
     mut beginner: Query<&mut Node, (With<BeginnerPanel>, Without<StandardPanel>)>,
-    mut toggles: Query<(&SchemeToggle, &mut BackgroundColor)>,
 ) {
     let standard_active = *scheme == ControlScheme::Standard;
     for mut node in &mut standard {
@@ -465,9 +402,19 @@ fn update_panel_visibility(
             Display::Flex
         };
     }
-    for (toggle, mut bg) in &mut toggles {
+}
+
+/// Color the scheme toggles every frame: the active scheme stays highlighted;
+/// an inactive toggle shows hover feedback like the other buttons.
+fn style_scheme_toggles(
+    scheme: Res<ControlScheme>,
+    mut toggles: Query<(&SchemeToggle, &Interaction, &mut BackgroundColor)>,
+) {
+    for (toggle, interaction, mut bg) in &mut toggles {
         bg.0 = if toggle.0 == *scheme {
             BTN_PRESSED
+        } else if *interaction == Interaction::Hovered {
+            BTN_HOVER
         } else {
             BTN_NORMAL
         };
