@@ -19,6 +19,7 @@ use crate::cube::model::{CubeState, Face, Move, StickerColor, Turn};
 mod cache;
 mod coords;
 mod pdb;
+mod search;
 
 pub use kewb::DataTable;
 
