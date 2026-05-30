@@ -4,6 +4,7 @@ mod api;
 mod camera;
 mod cube;
 mod ui;
+mod view_relative;
 
 use api::ApiPlugin;
 use camera::CameraPlugin;
