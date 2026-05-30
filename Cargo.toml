@@ -1,0 +1,18 @@
+[package]
+name = "cube"
+version = "0.1.0"
+edition = "2021"
+description = "Interactive 3x3x3 Rubik's cube (Bevy) with a local HTTP control API"
+
+[dependencies]
+bevy = "0.18"
+tiny_http = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Faster incremental builds during development.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
