@@ -74,14 +74,17 @@ verifying it from an agent, launch in the background, screenshot with `screencap
 ## Architecture
 ```
 src/
-├── main.rs        # App + plugin wiring: CubePlugin, CameraPlugin, UiPlugin, ApiPlugin
+├── main.rs        # App + plugin wiring: CubePlugin, CameraPlugin, UiPlugin, ApiPlugin, MeshPickingPlugin, SwipePlugin
 ├── cube/
 │   ├── core.rs    # PURE integer-math cube (source of truth) — no Bevy, fully unit-tested
 │   ├── model.rs   # StickerColor, Face, Move (parse/notation), CubeState (serde JSON shape)
 │   ├── spawn.rs   # 26 cubie entities + sticker children; sync visuals <- core
 │   └── animation.rs # MoveQueue consumer; ~0.25s smoothstep layer turns, one at a time
-├── camera.rs      # orbit camera: left-drag (ignored over UI) + wheel zoom
-├── ui.rs          # native bevy_ui: 18 move buttons -> MoveQueue
+├── camera.rs      # re-basing turntable orbit (pole follows the tumble, smooth re-level, `L` levels) + wheel zoom; OrbitCamera::basis()
+├── geom.rs        # small shared geometry helper (best_by_dot: nearest direction by dot product)
+├── view_relative.rs # pure view-relative mapping: RelFace + relative_move(basis) -> absolute Move (Beginner panel)
+├── swipe.rs       # mesh-picking swipe/flick — drag a visible layer to turn it -> MoveQueue
+├── ui.rs          # native bevy_ui: Standard/Beginner scheme toggle, move grids + Reset -> MoveQueue
 └── api/           # tiny_http on its own thread + mpsc channel -> Bevy (non-blocking)
 ```
 **Key invariant:** the pure `CubeCore` is the single source of truth (geometry *and* color); Bevy
