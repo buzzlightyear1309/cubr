@@ -1,7 +1,3 @@
-// Phase 0 stubs: the contract is defined but not yet consumed by any phase.
-// Real consumers arrive in Phases 1+; this avoids pre-poisoning `clippy -D warnings`.
-#![allow(dead_code)]
-
 use bevy::prelude::*; // for IVec3, Color
 use serde::{Deserialize, Serialize};
 
@@ -17,10 +13,26 @@ pub enum StickerColor {
 }
 
 impl StickerColor {
+    /// All six colors, used for sanity checks.
+    pub const ALL: [StickerColor; 6] = [
+        StickerColor::W,
+        StickerColor::Y,
+        StickerColor::R,
+        StickerColor::O,
+        StickerColor::B,
+        StickerColor::G,
+    ];
+
     /// Render color (sRGB). White/Yellow/Red/Orange/Blue/Green tuned for a clean look.
     pub fn to_render_color(self) -> Color {
-        // Phase 1 supplies the tuned palette; placeholder keeps the crate compiling.
-        Color::WHITE
+        match self {
+            StickerColor::W => Color::srgb(0.95, 0.95, 0.95),
+            StickerColor::Y => Color::srgb(0.95, 0.80, 0.15),
+            StickerColor::R => Color::srgb(0.78, 0.10, 0.12),
+            StickerColor::O => Color::srgb(0.95, 0.45, 0.10),
+            StickerColor::B => Color::srgb(0.05, 0.30, 0.75),
+            StickerColor::G => Color::srgb(0.10, 0.60, 0.25),
+        }
     }
 }
 
@@ -39,14 +51,26 @@ impl Face {
 
     /// Outward normal in world space: U=+Y, D=-Y, R=+X, L=-X, F=+Z, B=-Z  (see README coords).
     pub fn normal(self) -> IVec3 {
-        // Phase 1 implements the real mapping.
-        IVec3::ZERO
+        match self {
+            Face::U => IVec3::new(0, 1, 0),
+            Face::D => IVec3::new(0, -1, 0),
+            Face::R => IVec3::new(1, 0, 0),
+            Face::L => IVec3::new(-1, 0, 0),
+            Face::F => IVec3::new(0, 0, 1),
+            Face::B => IVec3::new(0, 0, -1),
+        }
     }
 
     /// Solved color: U=W, D=Y, F=G, B=B, R=R, L=O  (see README face table).
     pub fn solved_color(self) -> StickerColor {
-        // Phase 1 implements the real mapping.
-        StickerColor::W
+        match self {
+            Face::U => StickerColor::W,
+            Face::D => StickerColor::Y,
+            Face::F => StickerColor::G,
+            Face::B => StickerColor::B,
+            Face::R => StickerColor::R,
+            Face::L => StickerColor::O,
+        }
     }
 }
 
@@ -141,15 +165,41 @@ impl Move {
     ];
 
     /// Parse one of the 18 notation strings; None for anything else.
-    pub fn parse(_s: &str) -> Option<Move> {
-        // Phase 1 implements the real parser.
-        None
+    pub fn parse(s: &str) -> Option<Move> {
+        let face = match s.chars().next()? {
+            'U' => Face::U,
+            'D' => Face::D,
+            'L' => Face::L,
+            'R' => Face::R,
+            'F' => Face::F,
+            'B' => Face::B,
+            _ => return None,
+        };
+        let turn = match &s[1..] {
+            "" => Turn::Cw,
+            "'" => Turn::Ccw,
+            "2" => Turn::Double,
+            _ => return None,
+        };
+        Some(Move { face, turn })
     }
 
     /// Notation string, e.g. "R", "R'", "R2".
     pub fn notation(self) -> String {
-        // Phase 1 implements the real notation.
-        String::new()
+        let face = match self.face {
+            Face::U => 'U',
+            Face::D => 'D',
+            Face::L => 'L',
+            Face::R => 'R',
+            Face::F => 'F',
+            Face::B => 'B',
+        };
+        let suffix = match self.turn {
+            Turn::Cw => "",
+            Turn::Ccw => "'",
+            Turn::Double => "2",
+        };
+        format!("{face}{suffix}")
     }
 
     /// Rotation axis = self.face.normal().
@@ -159,8 +209,11 @@ impl Move {
 
     /// Number of clockwise (looking at the face from outside) quarter-turns: Cw=1, Ccw=3, Double=2.
     pub fn quarter_turns_cw(self) -> u8 {
-        // Phase 1 implements the real mapping.
-        0
+        match self.turn {
+            Turn::Cw => 1,
+            Turn::Ccw => 3,
+            Turn::Double => 2,
+        }
     }
 }
 
@@ -180,14 +233,13 @@ pub struct CubeState {
 impl CubeState {
     /// All 9 of each face = that face's solved color.
     pub fn solved() -> Self {
-        // Phase 1 implements the real solved state from Face::solved_color.
         CubeState {
-            U: [StickerColor::W; 9],
-            R: [StickerColor::R; 9],
-            F: [StickerColor::G; 9],
-            D: [StickerColor::Y; 9],
-            L: [StickerColor::O; 9],
-            B: [StickerColor::B; 9],
+            U: [Face::U.solved_color(); 9],
+            R: [Face::R.solved_color(); 9],
+            F: [Face::F.solved_color(); 9],
+            D: [Face::D.solved_color(); 9],
+            L: [Face::L.solved_color(); 9],
+            B: [Face::B.solved_color(); 9],
         }
     }
 
@@ -205,7 +257,165 @@ impl CubeState {
     /// Non-fatal sanity check per README "Validation notes": 6 faces × 9, each color ×9.
     /// Returns warnings; never rejects (impossible states are allowed).
     pub fn sanity_warnings(&self) -> Vec<String> {
-        // Phase 1 implements the real checks.
-        Vec::new()
+        let mut warnings = Vec::new();
+        let mut counts = [0usize; 6];
+        for f in Face::ALL {
+            for &c in self.face(f) {
+                let idx = StickerColor::ALL.iter().position(|&x| x == c).unwrap();
+                counts[idx] += 1;
+            }
+        }
+        for (i, &color) in StickerColor::ALL.iter().enumerate() {
+            if counts[i] != 9 {
+                warnings.push(format!(
+                    "color {color:?} appears {} time(s), expected 9",
+                    counts[i]
+                ));
+            }
+        }
+        warnings
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn face_normals_and_colors() {
+        assert_eq!(Face::U.normal(), IVec3::new(0, 1, 0));
+        assert_eq!(Face::D.normal(), IVec3::new(0, -1, 0));
+        assert_eq!(Face::R.normal(), IVec3::new(1, 0, 0));
+        assert_eq!(Face::L.normal(), IVec3::new(-1, 0, 0));
+        assert_eq!(Face::F.normal(), IVec3::new(0, 0, 1));
+        assert_eq!(Face::B.normal(), IVec3::new(0, 0, -1));
+
+        assert_eq!(Face::U.solved_color(), StickerColor::W);
+        assert_eq!(Face::D.solved_color(), StickerColor::Y);
+        assert_eq!(Face::F.solved_color(), StickerColor::G);
+        assert_eq!(Face::B.solved_color(), StickerColor::B);
+        assert_eq!(Face::R.solved_color(), StickerColor::R);
+        assert_eq!(Face::L.solved_color(), StickerColor::O);
+    }
+
+    #[test]
+    fn quarter_turns() {
+        assert_eq!(
+            Move {
+                face: Face::R,
+                turn: Turn::Cw
+            }
+            .quarter_turns_cw(),
+            1
+        );
+        assert_eq!(
+            Move {
+                face: Face::R,
+                turn: Turn::Ccw
+            }
+            .quarter_turns_cw(),
+            3
+        );
+        assert_eq!(
+            Move {
+                face: Face::R,
+                turn: Turn::Double
+            }
+            .quarter_turns_cw(),
+            2
+        );
+    }
+
+    // Test 7 (part 1): parse/notation round-trip over all 18; parse rejects junk;
+    // serde_json::to_string(&StickerColor::W) == "\"W\"".
+    #[test]
+    fn parse_notation_round_trip() {
+        assert_eq!(Move::ALL.len(), 18);
+        for &m in &Move::ALL {
+            assert_eq!(Move::parse(&m.notation()), Some(m));
+        }
+        // Exact expected forms for a representative face.
+        assert_eq!(
+            Move {
+                face: Face::R,
+                turn: Turn::Cw
+            }
+            .notation(),
+            "R"
+        );
+        assert_eq!(
+            Move {
+                face: Face::R,
+                turn: Turn::Ccw
+            }
+            .notation(),
+            "R'"
+        );
+        assert_eq!(
+            Move {
+                face: Face::R,
+                turn: Turn::Double
+            }
+            .notation(),
+            "R2"
+        );
+    }
+
+    #[test]
+    fn parse_rejects_junk() {
+        assert_eq!(Move::parse(""), None);
+        assert_eq!(Move::parse("x"), None);
+        assert_eq!(Move::parse("RR"), None);
+        assert_eq!(Move::parse("R3"), None);
+        assert_eq!(Move::parse("u"), None);
+    }
+
+    #[test]
+    fn sticker_color_serializes_to_single_letter() {
+        assert_eq!(serde_json::to_string(&StickerColor::W).unwrap(), "\"W\"");
+        assert_eq!(serde_json::to_string(&StickerColor::Y).unwrap(), "\"Y\"");
+        assert_eq!(serde_json::to_string(&StickerColor::R).unwrap(), "\"R\"");
+        assert_eq!(serde_json::to_string(&StickerColor::O).unwrap(), "\"O\"");
+        assert_eq!(serde_json::to_string(&StickerColor::B).unwrap(), "\"B\"");
+        assert_eq!(serde_json::to_string(&StickerColor::G).unwrap(), "\"G\"");
+        assert_eq!(
+            serde_json::from_str::<StickerColor>("\"O\"").unwrap(),
+            StickerColor::O
+        );
+    }
+
+    // Test 7 (part 2): CubeState serde round-trips.
+    #[test]
+    fn cube_state_serde_round_trip() {
+        let s = CubeState::solved();
+        let json = serde_json::to_string(&s).unwrap();
+        let back: CubeState = serde_json::from_str(&json).unwrap();
+        assert_eq!(s, back);
+    }
+
+    #[test]
+    fn cube_state_solved_matches_readme_example() {
+        let s = CubeState::solved();
+        assert_eq!(s.U, [StickerColor::W; 9]);
+        assert_eq!(s.R, [StickerColor::R; 9]);
+        assert_eq!(s.F, [StickerColor::G; 9]);
+        assert_eq!(s.D, [StickerColor::Y; 9]);
+        assert_eq!(s.L, [StickerColor::O; 9]);
+        assert_eq!(s.B, [StickerColor::B; 9]);
+    }
+
+    #[test]
+    fn sanity_warnings_clean_for_solved_and_warns_for_impossible() {
+        assert!(CubeState::solved().sanity_warnings().is_empty());
+        let all_white = CubeState {
+            U: [StickerColor::W; 9],
+            R: [StickerColor::W; 9],
+            F: [StickerColor::W; 9],
+            D: [StickerColor::W; 9],
+            L: [StickerColor::W; 9],
+            B: [StickerColor::W; 9],
+        };
+        // 5 non-white colors should each be flagged (count 0), and white (count 54).
+        assert!(!all_white.sanity_warnings().is_empty());
     }
 }
