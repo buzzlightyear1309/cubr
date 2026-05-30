@@ -312,13 +312,20 @@ pub(crate) fn partial_perm_unrank(rank: u32) -> [u8; 6] {
         digits[i] = rank % base;
         rank /= base;
     }
-    // Map each "kth still-available" digit to an actual 0..12 value.
-    let mut avail: Vec<u8> = (0..12).collect();
+    // Map each "kth still-available" digit to an actual 0..12 value, removing it from a
+    // fixed stack array (no heap allocation — this runs ~18× per node on the hot
+    // PDB-generation path, so a per-call `Vec` here dominated edge-PDB build time).
+    let mut avail: [u8; 12] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+    let mut len = 12usize;
     let mut out = [0u8; 6];
-    for i in 0..6 {
+    for (i, slot) in out.iter_mut().enumerate() {
         let idx = digits[i] as usize;
-        out[i] = avail[idx];
-        avail.remove(idx);
+        *slot = avail[idx];
+        // Remove avail[idx], preserving the order of the rest.
+        for k in idx..(len - 1) {
+            avail[k] = avail[k + 1];
+        }
+        len -= 1;
     }
     out
 }
