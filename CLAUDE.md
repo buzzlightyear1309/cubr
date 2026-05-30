@@ -85,8 +85,8 @@ src/
 ├── view_relative.rs # pure view-relative mapping: RelFace + relative_move(basis) -> Move, describe (inverse) + rel_label (Beginner wording)
 ├── swipe.rs       # mesh-picking swipe/flick — drag a visible layer to turn it -> MoveQueue
 ├── ui.rs          # native bevy_ui: Standard/Beginner scheme toggle, move grids + Reset -> MoveQueue
-├── solver.rs      # PURE kewb two-phase adapter: CubeState -> Vec<Move>; no Bevy, fully unit-tested
-├── solve_ui.rs    # SolverPlugin: right Solve/Run panel + off-thread table build; scheme-aware step list -> MoveQueue
+├── solver/      # guaranteed-optimal Korf solver: coords + ranking (coords.rs), corner+2 edge PDBs + cache (pdb.rs/cache.rs), IDA* (search.rs); CubeState -> optimal Vec<Move> (kewb kept only for facelet parse/validate)
+├── solve_ui.rs    # SolverPlugin: right Solve/Run panel; off-thread PDB build + off-thread solve; scheme-aware step list -> MoveQueue
 └── api/           # tiny_http on its own thread + mpsc channel -> Bevy (non-blocking)
 ```
 **Key invariant:** the pure `CubeCore` is the single source of truth (geometry *and* color); Bevy

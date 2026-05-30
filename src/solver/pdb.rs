@@ -20,9 +20,6 @@
 //! and its new orientation is `(old + MOVE_CUBES[mv].eo[t]) % 2`. The neighbor-consistency
 //! test proves this matches the ground-truth full-cube `apply`.
 
-// See note above: exercised by tests but not yet wired into the live solver.
-#![allow(dead_code)]
-
 use super::coords::{
     apply, corner_ori_rank, corner_ori_unrank, edge_ori_rank, edge_ori_unrank, get_nibble,
     partial_perm_rank, partial_perm_unrank, perm_rank8, perm_unrank8, Cubies, MOVE_CUBES, SOLVED,

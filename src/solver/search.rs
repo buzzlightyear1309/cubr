@@ -11,9 +11,6 @@
 //! keeps working until Unit K4. Allow `dead_code` at the module level so the
 //! `-D warnings` gate stays green until then.
 
-// See note above: exercised by tests but not yet wired into the live solver.
-#![allow(dead_code)]
-
 use super::coords::{apply, index_to_move, Cubies, SOLVED};
 use super::pdb::Pdbs;
 use std::sync::atomic::{AtomicBool, Ordering};

@@ -22,11 +22,6 @@
 //! (the cube on the *left*). Our [`apply`] reproduces that order; the `compose_matches_kewb`
 //! test is the guard.
 
-// Everything here is the Korf foundation: exercised by this module's tests but not yet
-// wired into the live solver (that happens in later units K2–K4). Allow dead_code at the
-// module level so the `-D warnings` gate stays green until those units consume it.
-#![allow(dead_code)]
-
 use crate::cube::model::{Face, Move, Turn};
 
 /// Cube state on flat `u8` arrays (kewb's cubie convention; see module docs).
@@ -195,6 +190,9 @@ pub(crate) fn apply(c: &Cubies, move_idx: usize) -> Cubies {
 }
 
 /// Map one of our [`Move`]s to its [`MOVE_CUBES`] index (mirrors [`Move::ALL`]).
+// Used only by tests (the conversion-integrity guard and the search cross-checks);
+// the live solver path goes CubeState -> kewb -> Cubies and never needs this mapping.
+#[allow(dead_code)]
 pub(crate) fn move_to_index(m: Move) -> usize {
     let face = match m.face {
         Face::U => 0,

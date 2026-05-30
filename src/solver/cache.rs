@@ -8,9 +8,7 @@
 //! makes [`load`] return `None` so the caller regenerates.
 //!
 //! Not yet wired into the live solver (Unit K2 provides the primitives; `build_or_load`
-//! and the public `solve` rewrite are Unit K4). Allow `dead_code` at the module level.
-
-#![allow(dead_code)]
+//! and the public `solve` rewrite are Unit K4).
 
 use super::pdb::{Pdbs, CORNER_SIZE, EDGE_SIZE};
 use std::fs;

@@ -8,12 +8,18 @@
 //! the latter recomputed every frame against the current camera basis so it
 //! tracks orbiting. The step currently animating during a Run is highlighted.
 //!
-//! The solver's (slow) two-phase tables are built **once at startup, off-thread**
-//! via `AsyncComputeTaskPool`, so the window opens immediately and the Solve
-//! button simply reports "Building solver tables..." until they land.
+//! The solver's (slow, ~85 MB) Korf pattern databases are loaded-or-generated
+//! **once at startup, off-thread** via `AsyncComputeTaskPool`, so the window opens
+//! immediately and the Solve button simply reports "Building solver tables..." until
+//! they land. Each solve also runs **off-thread** (a guaranteed-optimal IDA* search
+//! can take seconds on the deepest states): pressing Solve spawns a task and shows
+//! "Solving...", and a repaint cancels any in-flight solve.
 //!
 //! This is a pure presentation/input layer: it reads `Cube` + the camera basis,
 //! ends at `MoveQueue` / `ApplyState`, and never reaches into the frozen engine.
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use bevy::prelude::*;
 use bevy::tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task};
@@ -28,13 +34,23 @@ use crate::ui::{
 };
 use crate::view_relative::{describe, rel_label};
 
-/// The solver tables, once the background build completes (`None` while loading).
+/// The Korf pattern databases, once the background load/generate completes (`None`
+/// while loading). `Arc`-wrapped so the off-thread solve closure can hold a clone
+/// without borrowing any Bevy state.
 #[derive(Resource, Default)]
-struct SolveTables(Option<solver::DataTable>);
+struct SolverPdbs(Option<Arc<solver::Pdbs>>);
 
-/// The in-flight startup table build. Removed once polled to completion.
+/// The in-flight startup PDB load/generate. Removed once polled to completion.
 #[derive(Resource)]
-struct TableBuildTask(Task<solver::DataTable>);
+struct PdbBuildTask(Task<Arc<solver::Pdbs>>);
+
+/// An in-flight off-thread solve. Present only while a solve is running; its `cancel`
+/// flag is set (and the resource dropped) when a repaint supersedes it.
+#[derive(Resource)]
+struct SolveTask {
+    task: Task<Result<Vec<Move>, solver::SolveError>>,
+    cancel: Arc<AtomicBool>,
+}
 
 /// The current solution + run/UI state shown in the panel.
 #[derive(Resource)]
@@ -68,8 +84,10 @@ enum SolveStatus {
     /// Tables ready, no solution computed yet.
     #[default]
     Idle,
-    /// Building the two-phase tables in the background.
+    /// Loading / generating the Korf pattern databases in the background.
     Loading,
+    /// A solve is running off-thread.
+    Solving,
     /// Last solve found a solution of this many moves.
     Solved(usize),
     /// The current cube is already solved (empty solution).
@@ -125,7 +143,10 @@ fn current_step(run_total: usize, remaining: usize) -> Option<usize> {
 fn status_text(status: SolveStatus) -> String {
     match status {
         SolveStatus::Idle => "Press Solve".to_string(),
-        SolveStatus::Loading => "Building solver tables...".to_string(),
+        SolveStatus::Loading => {
+            "Building solver tables (first run can take a minute)...".to_string()
+        }
+        SolveStatus::Solving => "Solving...".to_string(),
         SolveStatus::Solved(n) => format!("Solved in {n} moves"),
         SolveStatus::AlreadySolved => "Already solved".to_string(),
         SolveStatus::Unsolvable => "Unsolvable state".to_string(),
@@ -140,7 +161,7 @@ pub struct SolverPlugin;
 
 impl Plugin for SolverPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<SolveTables>()
+        app.init_resource::<SolverPdbs>()
             .init_resource::<Solution>()
             .add_systems(Startup, (start_table_build, spawn_steps_panel))
             .add_systems(
@@ -148,6 +169,7 @@ impl Plugin for SolverPlugin {
                 (
                     poll_table_build,
                     handle_solve_button,
+                    poll_solve_task,
                     handle_run_button,
                     track_run_progress,
                     clear_solution_on_repaint.run_if(on_message::<ApplyState>),
@@ -159,30 +181,31 @@ impl Plugin for SolverPlugin {
     }
 }
 
-// --- Background table build ---------------------------------------------------
+// --- Background PDB build ------------------------------------------------------
 
-/// Kick off the (slow) two-phase table build off-thread on the async compute
+/// Kick off the (slow) Korf PDB load-or-generate off-thread on the async compute
 /// pool, so the window opens immediately. `Solution` defaults to `Loading`.
 fn start_table_build(mut commands: Commands) {
-    let task = AsyncComputeTaskPool::get().spawn(async move { solver::build_tables() });
-    commands.insert_resource(TableBuildTask(task));
+    let task =
+        AsyncComputeTaskPool::get().spawn(async move { Arc::new(solver::build_or_load_pdbs()) });
+    commands.insert_resource(PdbBuildTask(task));
 }
 
-/// Poll the in-flight build once per frame; when it completes, move the tables
-/// into `SolveTables`, drop the task resource, and flip a still-`Loading` status
+/// Poll the in-flight build once per frame; when it completes, move the PDBs
+/// into `SolverPdbs`, drop the task resource, and flip a still-`Loading` status
 /// to `Idle` (a solve/repaint that happened meanwhile is left untouched).
 fn poll_table_build(
     mut commands: Commands,
-    task: Option<ResMut<TableBuildTask>>,
-    mut tables: ResMut<SolveTables>,
+    task: Option<ResMut<PdbBuildTask>>,
+    mut pdbs: ResMut<SolverPdbs>,
     mut solution: ResMut<Solution>,
 ) {
     let Some(mut task) = task else {
         return;
     };
     if let Some(built) = block_on(future::poll_once(&mut task.0)) {
-        tables.0 = Some(built);
-        commands.remove_resource::<TableBuildTask>();
+        pdbs.0 = Some(built);
+        commands.remove_resource::<PdbBuildTask>();
         if solution.status == SolveStatus::Loading {
             solution.status = SolveStatus::Idle;
         }
@@ -191,45 +214,84 @@ fn poll_table_build(
 
 // --- Button handlers ----------------------------------------------------------
 
-/// On press of Solve: if the tables are ready, solve the current cube state and
-/// store the result; otherwise report that the tables are still building. The
-/// `With<SolveButton>` filter keeps this query disjoint from the Run handler.
+/// On press of Solve: if the PDBs are ready and no solve is already running, spawn
+/// an off-thread IDA* solve of the current cube state and show "Solving..."; the
+/// result is collected by [`poll_solve_task`]. If the PDBs are still loading, report
+/// that. The `With<SolveButton>` filter keeps this query disjoint from the Run
+/// handler. The spawned closure is `Send + 'static` — it captures only the
+/// `Arc<Pdbs>`, an owned `CubeState`, and the `Arc<AtomicBool>` cancel flag (no
+/// Bevy refs).
 #[allow(clippy::type_complexity)]
 fn handle_solve_button(
+    mut commands: Commands,
     mut interactions: Query<
         (&Interaction, &mut BackgroundColor),
         (Changed<Interaction>, With<SolveButton>),
     >,
-    tables: Res<SolveTables>,
+    pdbs: Res<SolverPdbs>,
+    solve_task: Option<Res<SolveTask>>,
     cube: Res<Cube>,
     mut solution: ResMut<Solution>,
 ) {
     for (interaction, mut bg) in &mut interactions {
         if *interaction == Interaction::Pressed {
-            match tables.0.as_ref() {
-                Some(tables) => {
-                    let state = cube.0.to_state();
-                    solution.current = None;
-                    solution.run_total = 0;
-                    match solver::solve(tables, &state) {
-                        Ok(moves) => {
-                            solution.status = if moves.is_empty() {
-                                SolveStatus::AlreadySolved
-                            } else {
-                                SolveStatus::Solved(moves.len())
-                            };
-                            solution.moves = moves;
-                        }
-                        Err(_) => {
-                            solution.moves.clear();
-                            solution.status = SolveStatus::Unsolvable;
-                        }
+            if solve_task.is_some() {
+                // A solve is already running; ignore the press.
+            } else {
+                match pdbs.0.as_ref() {
+                    Some(pdbs) => {
+                        let pdbs = Arc::clone(pdbs);
+                        let state = cube.0.to_state();
+                        let cancel = Arc::new(AtomicBool::new(false));
+                        let cancel_clone = Arc::clone(&cancel);
+                        let task = AsyncComputeTaskPool::get()
+                            .spawn(async move { solver::solve(&pdbs, &state, &cancel_clone) });
+                        commands.insert_resource(SolveTask { task, cancel });
+                        // A new solve supersedes any old run highlight.
+                        solution.status = SolveStatus::Solving;
+                        solution.current = None;
+                        solution.run_total = 0;
                     }
+                    None => solution.status = SolveStatus::Loading,
                 }
-                None => solution.status = SolveStatus::Loading,
             }
         }
         set_button_color(interaction, &mut bg);
+    }
+}
+
+/// Poll the in-flight off-thread solve once per frame; when it completes, fold the
+/// result into the `Solution` panel and drop the task resource. A `Cancelled` result
+/// is ignored (a repaint already reset the panel).
+fn poll_solve_task(
+    mut commands: Commands,
+    task: Option<ResMut<SolveTask>>,
+    mut solution: ResMut<Solution>,
+) {
+    let Some(mut task) = task else {
+        return;
+    };
+    if let Some(result) = block_on(future::poll_once(&mut task.task)) {
+        match result {
+            Ok(moves) => {
+                solution.status = if moves.is_empty() {
+                    SolveStatus::AlreadySolved
+                } else {
+                    SolveStatus::Solved(moves.len())
+                };
+                solution.moves = moves;
+                solution.current = None;
+                solution.run_total = 0;
+            }
+            Err(solver::SolveError::Unsolvable) => {
+                solution.moves.clear();
+                solution.status = SolveStatus::Unsolvable;
+            }
+            Err(solver::SolveError::Cancelled) => {
+                // A repaint already reset the panel; nothing to do.
+            }
+        }
+        commands.remove_resource::<SolveTask>();
     }
 }
 
@@ -279,13 +341,24 @@ fn track_run_progress(
     }
 }
 
-/// A full repaint (Reset or `POST /state`) invalidates the displayed solution,
-/// so clear it and return the panel to `Idle`. Gated on `ApplyState`.
-fn clear_solution_on_repaint(mut solution: ResMut<Solution>) {
+/// A full repaint (Reset or `POST /state`) invalidates the displayed solution, so
+/// clear it and return the panel to `Idle`. Any in-flight off-thread solve is now
+/// stale: set its cancel flag (the detached task observes it and exits with
+/// `Cancelled`, which `poll_solve_task` ignores) and drop the task resource. Gated on
+/// `ApplyState`.
+fn clear_solution_on_repaint(
+    mut commands: Commands,
+    solve_task: Option<Res<SolveTask>>,
+    mut solution: ResMut<Solution>,
+) {
     solution.moves.clear();
     solution.current = None;
     solution.run_total = 0;
     solution.status = SolveStatus::Idle;
+    if let Some(task) = solve_task {
+        task.cancel.store(true, Ordering::Relaxed);
+        commands.remove_resource::<SolveTask>();
+    }
 }
 
 // --- Panel UI -----------------------------------------------------------------
@@ -468,8 +541,9 @@ mod tests {
         assert_eq!(status_text(SolveStatus::Idle), "Press Solve");
         assert_eq!(
             status_text(SolveStatus::Loading),
-            "Building solver tables..."
+            "Building solver tables (first run can take a minute)..."
         );
+        assert_eq!(status_text(SolveStatus::Solving), "Solving...");
         assert_eq!(status_text(SolveStatus::Solved(12)), "Solved in 12 moves");
         assert_eq!(status_text(SolveStatus::AlreadySolved), "Already solved");
         assert_eq!(status_text(SolveStatus::Unsolvable), "Unsolvable state");

@@ -1,63 +1,92 @@
-//! Pure two-phase (Kociemba) solver adapter around the `kewb` crate.
+//! Guaranteed-optimal Korf IDA* solver.
 //!
 //! No Bevy types or systems live here — this mirrors `cube::core` in being a pure,
-//! fully unit-tested module. The Bevy layer (a later unit) caches the `DataTable`
-//! produced by [`build_tables`] off-thread and feeds states through [`solve`].
+//! fully unit-tested module. The Bevy layer (`solve_ui`) loads/generates the
+//! [`Pdbs`] off-thread and feeds states through [`solve`].
 //!
-//! ## Mapping to `kewb`
+//! ## The kewb boundary
+//! We keep `kewb` *only* as the cube model + facelet parse/validation: a facelet
+//! string is parsed to [`kewb::FaceCube`], converted to [`kewb::CubieCube`] (which
+//! validates physical solvability — wrong color counts / bad parity become
+//! [`SolveError::Unsolvable`]), and then read field-by-field into our own
+//! [`coords::Cubies`] integer arrays via [`cubies_from_kewb`]. All coordinate math,
+//! the pattern databases, and the search run on our own arrays — `kewb::Solver` /
+//! `kewb::DataTable` are no longer used.
+//!
 //! `kewb` works in a facelet alphabet of face *letters* `U R F D L B` (its
 //! [`kewb::Color`]) laid out in face order **U, R, F, D, L, B**, 9 facelets each,
 //! row-major. Our [`CubeState`] uses the same face order (its struct fields) and the
 //! README per-face read order is already the Kociemba-style layout (mirrored `B`),
 //! so the conversion is a straight concatenation once each sticker color is mapped to
 //! the face letter of the face whose solved center is that color
-//! (`W->U, R->R, G->F, Y->D, O->L, B->B`). The solve-and-reapply tests verify this
-//! end-to-end: any per-face mirror/rotation error would make a real scramble fail.
+//! (`W->U, R->R, G->F, Y->D, O->L, B->B`).
 
-use crate::cube::model::{CubeState, Face, Move, StickerColor, Turn};
+use crate::cube::model::{CubeState, Face, Move, StickerColor};
+use std::sync::atomic::AtomicBool;
 
 mod cache;
 mod coords;
 mod pdb;
 mod search;
 
-pub use kewb::DataTable;
+pub(crate) use pdb::Pdbs;
 
-/// Error from solving. `Unsolvable` covers physically impossible / unparseable states
-/// (wrong color counts, bad permutation/orientation parity, etc.).
+/// Error from solving.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SolveError {
+pub(crate) enum SolveError {
+    /// The state is physically impossible / unparseable (wrong color counts, bad
+    /// permutation/orientation parity, etc.).
     Unsolvable,
+    /// The search was aborted via the cancel flag (e.g. a repaint superseded it).
+    Cancelled,
 }
 
-/// Maximum solution length we ask the two-phase solver for. Kociemba's algorithm
-/// finds a solution within 23 moves for any solvable cube at this bound.
-const MAX_SOLUTION_LEN: u8 = 23;
-
-/// Generate the two-phase move + pruning tables. SLOW (seconds) — the caller runs
-/// this once, off-thread, and caches the handle. Pure (no Bevy).
-pub fn build_tables() -> DataTable {
-    DataTable::default()
+/// Load the cached Korf PDBs, or generate them (SLOW, ~30–60 s on first run) and cache
+/// them to disk. Pure (no Bevy); the caller runs this once, off-thread.
+pub(crate) fn build_or_load_pdbs() -> Pdbs {
+    let path = cache::cache_path();
+    if let Some(p) = cache::load(&path) {
+        return p;
+    }
+    let p = Pdbs::generate();
+    let _ = cache::save(&path, &p); // best-effort cache; ignore write errors
+    p
 }
 
-/// Solve `state` with the two-phase algorithm. Returns the solution as our absolute
-/// [`Move`]s (low move count, `<= 23`). An already-solved state returns an empty vec
-/// (`Ok(vec![])`). A physically impossible / invalid state returns
-/// `Err(SolveError::Unsolvable)`.
-pub fn solve(tables: &DataTable, state: &CubeState) -> Result<Vec<Move>, SolveError> {
+/// Solve `state` optimally. Validates the state via kewb (an impossible cube returns
+/// [`SolveError::Unsolvable`]), converts it to our coordinate arrays, then runs the
+/// guaranteed-optimal IDA* search. `cancel` aborts the search
+/// (-> [`SolveError::Cancelled`]). An already-solved state returns `Ok(vec![])`.
+pub(crate) fn solve(
+    pdbs: &Pdbs,
+    state: &CubeState,
+    cancel: &AtomicBool,
+) -> Result<Vec<Move>, SolveError> {
     let facelets = state_to_facelets(state);
-    let face_cube =
-        kewb::FaceCube::try_from(facelets.as_str()).map_err(|_| SolveError::Unsolvable)?;
-    let cubie_cube = kewb::CubieCube::try_from(&face_cube).map_err(|_| SolveError::Unsolvable)?;
+    let face = kewb::FaceCube::try_from(facelets.as_str()).map_err(|_| SolveError::Unsolvable)?;
+    let cubie = kewb::CubieCube::try_from(&face).map_err(|_| SolveError::Unsolvable)?;
+    let cubies = cubies_from_kewb(&cubie);
+    match search::search(pdbs, &cubies, cancel) {
+        Some(moves) => Ok(moves),
+        None => Err(SolveError::Cancelled),
+    }
+}
 
-    let mut solver = kewb::Solver::new(tables, MAX_SOLUTION_LEN, None);
-    let solution = solver.solve(cubie_cube).ok_or(SolveError::Unsolvable)?;
-
-    Ok(solution
-        .get_all_moves()
-        .into_iter()
-        .map(from_kewb_move)
-        .collect())
+/// Read a validated [`kewb::CubieCube`] into our [`coords::Cubies`] integer arrays.
+/// The `Corner`/`Edge` permutation enums cast straight to their `0..8` / `0..12`
+/// discriminants; orientations are already `u8`. The conventions match (our move
+/// model is transcribed from kewb's), guarded by the conversion-integrity test.
+fn cubies_from_kewb(c: &kewb::CubieCube) -> coords::Cubies {
+    let mut out = coords::SOLVED;
+    for i in 0..8 {
+        out.cp[i] = c.cp[i] as u8;
+        out.co[i] = c.co[i];
+    }
+    for i in 0..12 {
+        out.ep[i] = c.ep[i] as u8;
+        out.eo[i] = c.eo[i];
+    }
+    out
 }
 
 /// Map a sticker color to the `kewb` facelet *letter* (face letter) of the face whose
@@ -89,50 +118,17 @@ fn state_to_facelets(state: &CubeState) -> String {
     s
 }
 
-/// Map a `kewb` move variant to our absolute [`Move`]. The plain variant is a CW
-/// quarter-turn, the `2` variant is a 180° turn, and the `3` variant is CCW (prime).
-fn from_kewb_move(m: kewb::Move) -> Move {
-    use kewb::Move as K;
-    let (face, turn) = match m {
-        K::U => (Face::U, Turn::Cw),
-        K::U2 => (Face::U, Turn::Double),
-        K::U3 => (Face::U, Turn::Ccw),
-        K::D => (Face::D, Turn::Cw),
-        K::D2 => (Face::D, Turn::Double),
-        K::D3 => (Face::D, Turn::Ccw),
-        K::R => (Face::R, Turn::Cw),
-        K::R2 => (Face::R, Turn::Double),
-        K::R3 => (Face::R, Turn::Ccw),
-        K::L => (Face::L, Turn::Cw),
-        K::L2 => (Face::L, Turn::Double),
-        K::L3 => (Face::L, Turn::Ccw),
-        K::F => (Face::F, Turn::Cw),
-        K::F2 => (Face::F, Turn::Double),
-        K::F3 => (Face::F, Turn::Ccw),
-        K::B => (Face::B, Turn::Cw),
-        K::B2 => (Face::B, Turn::Double),
-        K::B3 => (Face::B, Turn::Ccw),
-    };
-    Move { face, turn }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::cube::core::CubeCore;
-    use std::sync::OnceLock;
+    use coords::{apply, move_to_index, Cubies, SOLVED};
+    use std::sync::atomic::AtomicBool;
 
-    /// Build the (slow) two-phase tables exactly once for the whole test module.
-    fn tables() -> &'static DataTable {
-        static TABLES: OnceLock<DataTable> = OnceLock::new();
-        TABLES.get_or_init(build_tables)
-    }
-
-    /// Parse a scramble sequence of notation strings into our `Move`s.
-    fn scramble(seq: &[&str]) -> Vec<Move> {
-        seq.iter()
-            .map(|s| Move::parse(s).unwrap_or_else(|| panic!("bad move {s}")))
-            .collect()
+    /// Tiny deterministic LCG (Numerical Recipes); no `rand` crate.
+    fn lcg(seed: &mut u32) -> u32 {
+        *seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        *seed
     }
 
     /// Apply `seq` to a fresh solved core and return its state.
@@ -144,7 +140,15 @@ mod tests {
         core.to_state()
     }
 
-    // Test 1: the solved state produces the canonical kewb solved facelet string.
+    /// The full pipeline used by `solve`: `CubeState` -> facelets -> kewb -> `Cubies`.
+    fn state_through_kewb(state: &CubeState) -> Cubies {
+        let facelets = state_to_facelets(state);
+        let face = kewb::FaceCube::try_from(facelets.as_str()).expect("valid facelets");
+        let cubie = kewb::CubieCube::try_from(&face).expect("solvable cube");
+        cubies_from_kewb(&cubie)
+    }
+
+    // The solved state produces the canonical kewb solved facelet string.
     #[test]
     fn solved_facelets_string_is_canonical() {
         let expected = "UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB";
@@ -153,243 +157,119 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
-    // Test 2: kewb move -> our Move mapping, covering all six faces and all turns.
+    // ★ Conversion-integrity guard (fast, no PDBs): the CubeState -> Cubies pipeline
+    // must agree with applying the same scramble to `coords::SOLVED` via `coords::apply`
+    // (the move model the PDBs / search use). This is the key integration check that a
+    // facelet/parity error would catch without building any tables.
     #[test]
-    fn kewb_move_mapping_covers_all_faces() {
-        use kewb::Move as K;
-        let cw = Turn::Cw;
-        let ccw = Turn::Ccw;
-        let dbl = Turn::Double;
+    fn conversion_pipeline_matches_coords_apply() {
+        // Solved round-trips to SOLVED.
+        assert_eq!(state_through_kewb(&CubeState::solved()), SOLVED);
 
-        assert_eq!(
-            from_kewb_move(K::U),
-            Move {
-                face: Face::U,
-                turn: cw
+        let mut seed = 0x1234_5678u32;
+        for _ in 0..50 {
+            // Build a deterministic random scramble as Vec<Move>, applying it both to a
+            // CubeCore (for the facelet pipeline) and to `coords::SOLVED` (for the model).
+            let len = 1 + (lcg(&mut seed) as usize % 30); // 1..=30 moves
+            let mut scramble: Vec<Move> = Vec::with_capacity(len);
+            let mut expected = SOLVED;
+            for _ in 0..len {
+                let idx = (lcg(&mut seed) as usize) % 18;
+                let m = Move::ALL[idx];
+                scramble.push(m);
+                expected = apply(&expected, move_to_index(m));
             }
-        );
-        assert_eq!(
-            from_kewb_move(K::U2),
-            Move {
-                face: Face::U,
-                turn: dbl
-            }
-        );
-        assert_eq!(
-            from_kewb_move(K::U3),
-            Move {
-                face: Face::U,
-                turn: ccw
-            }
-        );
 
-        assert_eq!(
-            from_kewb_move(K::D),
-            Move {
-                face: Face::D,
-                turn: cw
-            }
-        );
-        assert_eq!(
-            from_kewb_move(K::D2),
-            Move {
-                face: Face::D,
-                turn: dbl
-            }
-        );
-        assert_eq!(
-            from_kewb_move(K::D3),
-            Move {
-                face: Face::D,
-                turn: ccw
-            }
-        );
-
-        assert_eq!(
-            from_kewb_move(K::R),
-            Move {
-                face: Face::R,
-                turn: cw
-            }
-        );
-        assert_eq!(
-            from_kewb_move(K::R2),
-            Move {
-                face: Face::R,
-                turn: dbl
-            }
-        );
-        assert_eq!(
-            from_kewb_move(K::R3),
-            Move {
-                face: Face::R,
-                turn: ccw
-            }
-        );
-
-        assert_eq!(
-            from_kewb_move(K::L),
-            Move {
-                face: Face::L,
-                turn: cw
-            }
-        );
-        assert_eq!(
-            from_kewb_move(K::L2),
-            Move {
-                face: Face::L,
-                turn: dbl
-            }
-        );
-        assert_eq!(
-            from_kewb_move(K::L3),
-            Move {
-                face: Face::L,
-                turn: ccw
-            }
-        );
-
-        assert_eq!(
-            from_kewb_move(K::F),
-            Move {
-                face: Face::F,
-                turn: cw
-            }
-        );
-        assert_eq!(
-            from_kewb_move(K::F2),
-            Move {
-                face: Face::F,
-                turn: dbl
-            }
-        );
-        assert_eq!(
-            from_kewb_move(K::F3),
-            Move {
-                face: Face::F,
-                turn: ccw
-            }
-        );
-
-        assert_eq!(
-            from_kewb_move(K::B),
-            Move {
-                face: Face::B,
-                turn: cw
-            }
-        );
-        assert_eq!(
-            from_kewb_move(K::B2),
-            Move {
-                face: Face::B,
-                turn: dbl
-            }
-        );
-        assert_eq!(
-            from_kewb_move(K::B3),
-            Move {
-                face: Face::B,
-                turn: ccw
-            }
-        );
-    }
-
-    // Test 3: solve-and-reapply on known scrambles — the key correctness gate.
-    #[test]
-    fn solve_and_reapply_known_scrambles() {
-        let solved = CubeState::solved();
-
-        // Empty scramble: already solved -> empty solution.
-        let empty: Vec<Move> = vec![];
-        let solution = solve(tables(), &scrambled_state(&empty)).unwrap();
-        assert!(solution.is_empty(), "solved cube should need no moves");
-
-        let cases: &[&[&str]] = &[
-            &["R", "U", "R'", "U'"],
-            &[
-                "R", "U", "F", "L", "D", "B", "R'", "U2", "F'", "L2", "D'", "B2",
-            ],
-            &[
-                "F", "R", "U", "R'", "U'", "F'", "R", "U2", "R'", "U2", "R", "U'", "R'", "U'", "F",
-                "F", "U", "R", "U'", "R'",
-            ],
-        ];
-
-        for case in cases {
-            let seq = scramble(case);
-            let state = scrambled_state(&seq);
-
-            let solution = solve(tables(), &state).unwrap();
-            assert!(
-                solution.len() <= MAX_SOLUTION_LEN as usize,
-                "solution for {case:?} too long: {}",
-                solution.len()
+            let state = scrambled_state(&scramble);
+            let through = state_through_kewb(&state);
+            assert_eq!(
+                through, expected,
+                "pipeline diverged from coords::apply for scramble {scramble:?}"
             );
-
-            // Reapply the solution to the SAME scramble and assert solved.
-            let mut core = CubeCore::solved();
-            for &m in &seq {
-                core.apply(m);
-            }
-            for &m in &solution {
-                core.apply(m);
-            }
-            assert_eq!(core.to_state(), solved, "scramble {case:?} not solved");
         }
     }
 
-    // Test 4: deterministic pseudo-random scrambles (tiny LCG, no `rand` crate).
-    #[test]
-    fn solve_and_reapply_random_scrambles() {
-        let solved = CubeState::solved();
-
-        // Numerical Recipes LCG; deterministic for a fixed seed.
-        let mut seed: u32 = 0x1234_5678;
-        let mut next = || {
-            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            seed
-        };
-
-        for _ in 0..20 {
-            let mut core = CubeCore::solved();
-            for _ in 0..20 {
-                let m = Move::ALL[(next() as usize) % Move::ALL.len()];
-                core.apply(m);
-            }
-            let state = core.to_state();
-
-            let solution = solve(tables(), &state).unwrap();
-            assert!(
-                solution.len() <= MAX_SOLUTION_LEN as usize,
-                "random solution too long: {}",
-                solution.len()
-            );
-
-            for &m in &solution {
-                core.apply(m);
-            }
-            assert_eq!(core.to_state(), solved, "random scramble not solved");
-        }
-    }
-
-    // Test 5: a physically impossible state is rejected as Unsolvable.
+    // A physically impossible state is rejected as Unsolvable. Flip a single edge in
+    // place (the U/F edge): color counts stay correct and the permutation is valid, but
+    // the edge-orientation parity is now odd — physically unreachable, so kewb's
+    // CubieCube conversion rejects it. (A lone off-color sticker can re-parse to a valid
+    // cubie and is NOT a reliable rejection.)
     #[test]
     fn impossible_state_is_unsolvable() {
-        // Flip a single edge in place: swap the two stickers of the UF edge (its U
-        // facelet and its F facelet). Color counts stay correct and the permutation
-        // is valid, but the edge-orientation parity is now odd — which is physically
-        // impossible to reach on a real cube, so kewb's CubieCube conversion rejects
-        // it (a robust unsolvable case; a lone off-color sticker can re-parse to a
-        // valid cubie and is NOT a reliable rejection).
-        //
-        // README per-face read order: U index 7 is the U/F edge sticker on the U
-        // face; F index 1 is the U/F edge sticker on the F face (both centers stay).
+        // README per-face read order: U index 7 is the U/F edge sticker on the U face;
+        // F index 1 is the U/F edge sticker on the F face (both centers stay).
         let mut bad = CubeState::solved();
         assert_eq!(bad.U[7], StickerColor::W);
         assert_eq!(bad.F[1], StickerColor::G);
         bad.U[7] = StickerColor::G;
         bad.F[1] = StickerColor::W;
 
-        assert_eq!(solve(tables(), &bad), Err(SolveError::Unsolvable));
+        // `solve` rejects the cube during kewb validation, before the search ever reads
+        // the PDBs — so a cheap empty `Pdbs` (no slow generation) suffices here.
+        let empty = Pdbs {
+            corner: Vec::new(),
+            edge_a: Vec::new(),
+            edge_b: Vec::new(),
+        };
+        let cancel = AtomicBool::new(false);
+        assert_eq!(
+            solve(&empty, &bad, &cancel),
+            Err(SolveError::Unsolvable),
+            "an odd-parity edge flip must be rejected before the search"
+        );
+    }
+
+    // End-to-end (ignored: builds the full ~85 MB PDBs). For a few scrambles, `solve`
+    // returns a solution that reapplies to solved and is <= 20 moves; the reported
+    // 8-quarter-turn case must solve in <= 8.
+    #[test]
+    #[ignore = "builds the full ~85 MB PDBs and runs optimal solves (slow; run in release)"]
+    fn solve_end_to_end() {
+        let pdbs = Pdbs::generate();
+        let cancel = AtomicBool::new(false);
+        let solved = CubeState::solved();
+
+        // Already-solved -> empty solution.
+        assert!(solve(&pdbs, &solved, &cancel).unwrap().is_empty());
+
+        // The reported case: an 8-quarter-turn scramble must solve in <= 8.
+        let reported: Vec<Move> = ["R", "U", "F", "L", "D", "B", "R", "U"]
+            .iter()
+            .map(|s| Move::parse(s).unwrap())
+            .collect();
+        let state = scrambled_state(&reported);
+        let sol = solve(&pdbs, &state, &cancel).unwrap();
+        assert!(
+            sol.len() <= 8,
+            "8-quarter-turn scramble solved in {} moves (> 8)",
+            sol.len()
+        );
+        let mut core = CubeCore::solved();
+        for &m in reported.iter().chain(&sol) {
+            core.apply(m);
+        }
+        assert_eq!(core.to_state(), solved, "reported case not solved");
+
+        // A few deterministic random scrambles: solution <= 20 and reapplies to solved.
+        let mut seed = 0xC0DE_1234u32;
+        for _ in 0..5 {
+            let len = 8 + (lcg(&mut seed) as usize % 13); // 8..=20
+            let mut scramble: Vec<Move> = Vec::with_capacity(len);
+            for _ in 0..len {
+                scramble.push(Move::ALL[(lcg(&mut seed) as usize) % 18]);
+            }
+            let state = scrambled_state(&scramble);
+            let sol = solve(&pdbs, &state, &cancel).unwrap();
+            assert!(
+                sol.len() <= 20,
+                "random scramble solved in {} (> 20)",
+                sol.len()
+            );
+            let mut core = CubeCore::solved();
+            for &m in scramble.iter().chain(&sol) {
+                core.apply(m);
+            }
+            assert_eq!(core.to_state(), solved, "random scramble not solved");
+        }
     }
 }
