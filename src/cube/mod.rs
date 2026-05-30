@@ -9,6 +9,7 @@ pub mod core;
 pub mod model;
 pub mod spawn;
 
+use self::animation::{animate_move, apply_state, debug_keybind, start_move, ActiveMove};
 use self::core::CubeCore;
 use self::model::{CubeState, Move};
 use self::spawn::{spawn_cubies, sync_visuals, CubeMaterials};
@@ -41,6 +42,8 @@ impl Plugin for CubePlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(Cube(CubeCore::solved()))
             .init_resource::<MoveQueue>()
+            // Phase 4: tracks the in-flight layer turn (None = idle).
+            .init_resource::<ActiveMove>()
             // `CubeMaterials` needs `Assets<StandardMaterial>`, so build it via
             // `FromWorld` at `init_resource` time (assets plugin is already up).
             .init_resource::<CubeMaterials>()
@@ -51,6 +54,13 @@ impl Plugin for CubePlugin {
             // exists, so spawn then do one sync to land on the integer grid.
             .add_systems(Startup, (spawn_lighting, spawn_temp_camera))
             .add_systems(Startup, (spawn_cubies, sync_visuals).chain())
+            // Phase 4: drive the move queue + animation. `start_move` pops/applies
+            // and snapshots; `animate_move` eases the visual and fires
+            // `CoreChanged` on completion; `apply_state` handles instant repaints.
+            .add_systems(
+                Update,
+                (start_move, animate_move, apply_state, debug_keybind),
+            )
             // On every later mutation, snap visuals back onto the core.
             .add_systems(Update, sync_visuals.run_if(on_message::<CoreChanged>));
     }
