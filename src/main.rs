@@ -4,6 +4,7 @@ use bevy::prelude::*;
 mod api;
 mod camera;
 mod cube;
+mod geom;
 mod swipe;
 mod ui;
 mod view_relative;

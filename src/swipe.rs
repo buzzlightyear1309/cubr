@@ -172,16 +172,7 @@ fn dominant_inplane_axis(
 
 /// Absolute face whose outward normal best aligns with `v`.
 fn nearest_face(v: Vec3) -> Face {
-    let mut best = Face::U;
-    let mut best_dot = f32::NEG_INFINITY;
-    for f in Face::ALL {
-        let d = v.dot(f.normal().as_vec3());
-        if d > best_dot {
-            best_dot = d;
-            best = f;
-        }
-    }
-    best
+    crate::geom::best_by_dot(v, Face::ALL.map(|f| (f, f.normal().as_vec3())))
 }
 
 /// The face whose outward normal is exactly this axis-unit vector.

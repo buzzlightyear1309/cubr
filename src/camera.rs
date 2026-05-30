@@ -37,15 +37,24 @@ pub struct OrbitCamera {
     pub radius: f32,
 }
 
+/// The orbit view basis `(forward, right, up)` for a yaw/pitch (radius-free).
+/// `forward` looks from the camera toward the origin; `right` is the level yaw
+/// tangent. Single source of truth for the default view and the view-relative
+/// tests.
+pub fn basis_from_yaw_pitch(yaw: f32, pitch: f32) -> (Vec3, Vec3, Vec3) {
+    let (sy, cy) = yaw.sin_cos();
+    let (sp, cp) = pitch.sin_cos();
+    let forward = -Vec3::new(cp * cy, sp, cp * sy);
+    let right = Vec3::new(sy, 0.0, -cy);
+    let up = right.cross(forward);
+    (forward, right, up)
+}
+
 impl OrbitCamera {
     /// Build an orientation from the legacy yaw/pitch basis so the default view
     /// is preserved exactly (white up, green front, red right).
     fn from_yaw_pitch(yaw: f32, pitch: f32, radius: f32) -> Self {
-        let (sy, cy) = yaw.sin_cos();
-        let (sp, cp) = pitch.sin_cos();
-        let forward = -Vec3::new(cp * cy, sp, cp * sy);
-        let right = Vec3::new(sy, 0.0, -cy);
-        let up = right.cross(forward);
+        let (forward, right, up) = basis_from_yaw_pitch(yaw, pitch);
         Self {
             rotation: Quat::from_mat3(&Mat3::from_cols(right, up, -forward)),
             radius,
@@ -91,16 +100,7 @@ fn snap_to_axis(v: Vec3) -> Vec3 {
         Vec3::Z,
         Vec3::NEG_Z,
     ];
-    let mut best = Vec3::Y;
-    let mut best_dot = f32::NEG_INFINITY;
-    for a in axes {
-        let d = v.dot(a);
-        if d > best_dot {
-            best_dot = d;
-            best = a;
-        }
-    }
-    best
+    crate::geom::best_by_dot(v, axes.map(|a| (a, a)))
 }
 
 /// Re-level the view so the horizon is level relative to `pole` (camera right ⟂

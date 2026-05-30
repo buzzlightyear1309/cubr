@@ -47,42 +47,21 @@ const FACE_PRIORITY: [Face; 6] = [Face::F, Face::U, Face::R, Face::B, Face::D, F
 /// The absolute face whose outward normal best aligns with `dir`; ties broken by
 /// FACE_PRIORITY order (strict `>` keeps the earlier-listed face).
 fn resolve_face(dir: Vec3) -> Face {
-    let mut best = FACE_PRIORITY[0];
-    let mut best_dot = dir.dot(FACE_PRIORITY[0].normal().as_vec3());
-    for &face in &FACE_PRIORITY[1..] {
-        let d = dir.dot(face.normal().as_vec3());
-        if d > best_dot {
-            best_dot = d;
-            best = face;
-        }
-    }
-    best
+    crate::geom::best_by_dot(dir, FACE_PRIORITY.map(|f| (f, f.normal().as_vec3())))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::camera::basis_from_yaw_pitch;
     use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, FRAC_PI_6};
-
-    /// Build the basis exactly as `OrbitCamera::basis()` does, but as a local
-    /// helper so the test doesn't depend on the camera resource. Radius is
-    /// factored out (the unit normalizes / handles it).
-    fn basis_for(yaw: f32, pitch: f32) -> (Vec3, Vec3, Vec3) {
-        let (sy, cy) = yaw.sin_cos();
-        let (sp, cp) = pitch.sin_cos();
-        let pos = Vec3::new(cp * cy, sp, cp * sy); // radius factored out (unit handles it)
-        let forward = (-pos).normalize();
-        let right = Vec3::new(yaw.sin(), 0.0, -yaw.cos());
-        let up = right.cross(forward);
-        (forward, right, up)
-    }
 
     /// At the default view (yaw π/4, pitch π/6) the relative faces resolve to
     /// the README scheme: Front->F, Up->U, Right->R (and the opposites Back->B,
     /// Down->D).
     #[test]
     fn default_view_resolves_to_readme_scheme() {
-        let basis = basis_for(FRAC_PI_4, FRAC_PI_6);
+        let basis = basis_from_yaw_pitch(FRAC_PI_4, FRAC_PI_6);
         assert_eq!(
             relative_move(basis, RelFace::Front, Turn::Cw).face,
             Face::F
@@ -98,7 +77,7 @@ mod tests {
     /// forward = -pos = (-1,0,0), so Front = -forward = +X = R, etc.
     #[test]
     fn looking_from_plus_x() {
-        let basis = basis_for(0.0, 0.0);
+        let basis = basis_from_yaw_pitch(0.0, 0.0);
         assert_eq!(
             relative_move(basis, RelFace::Front, Turn::Cw).face,
             Face::R
@@ -114,14 +93,14 @@ mod tests {
     /// no longer R.
     #[test]
     fn yaw_quarter_turn_remaps_right() {
-        let basis = basis_for(FRAC_PI_4 + FRAC_PI_2, FRAC_PI_6);
+        let basis = basis_from_yaw_pitch(FRAC_PI_4 + FRAC_PI_2, FRAC_PI_6);
         assert_ne!(relative_move(basis, RelFace::Right, Turn::Cw).face, Face::R);
     }
 
     /// The turn passes through unchanged regardless of the relative face.
     #[test]
     fn turn_passes_through() {
-        let basis = basis_for(FRAC_PI_4, FRAC_PI_6);
+        let basis = basis_from_yaw_pitch(FRAC_PI_4, FRAC_PI_6);
         assert_eq!(
             relative_move(basis, RelFace::Front, Turn::Cw).turn,
             Turn::Cw
