@@ -6,14 +6,14 @@ A Rubik's cube project in three stages:
 2. **Python CV app (Stage 2)** — a computer-vision app that reads a physical cube and feeds its state into this game via the HTTP API.
 3. **Solver (Stage 3)** — a Rust solver, integrated into the workflow to produce move sequences for a given state.
 
-This README documents Stage 1 and, critically, the **cube-state JSON contract** that Stages 2 and 3 rely on. Stage 1 is not implemented yet — the sections below are the spec the implementation targets.
+This README documents Stage 1 and, critically, the **cube-state JSON contract** that Stages 2 and 3 rely on. Stage 1 is built and working; the sections below are both its spec and the binding contract the later stages depend on.
 
 ---
 
-## Stage 1 scope
+## Features
 
 - Fully rendered 3×3×3 cube in 3D with correct face colors.
-- Orbit camera: rotate the view by dragging with the mouse.
+- Orbit camera: rotate the view by left-dragging, zoom with the mouse wheel.
 - All 18 standard moves: `U U' U2  D D' D2  L L' L2  R R' R2  F F' F2  B B' B2`.
 - Smooth animation when a move is applied.
 - A UI panel with a button for each move.
@@ -161,9 +161,9 @@ Faces: `U` (up), `D` (down), `L` (left), `R` (right), `F` (front), `B` (back).
 
 ---
 
-## Planned project structure
+## Project structure
 
-The implementation (Stage 1) is expected to be laid out roughly as:
+Stage 1 is laid out as:
 
 ```
 cube/
@@ -177,7 +177,7 @@ cube/
     └── api/             # HTTP server + request/response types + Bevy bridge
 ```
 
-The HTTP server is intended to run on its own thread and hand commands to Bevy over a channel, so the render loop stays non-blocking.
+The HTTP server runs on its own thread and hands commands to Bevy over a channel, so the render loop stays non-blocking.
 
 ---
 

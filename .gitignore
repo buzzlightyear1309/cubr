@@ -1,2 +1,5 @@
 /target
 /.idea
+
+# Local working plans (scratch, not part of the repo)
+/docs/plans/

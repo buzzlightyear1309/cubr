@@ -2,18 +2,49 @@
 
 Interactive 3×3×3 Rubik's cube in **Rust + Bevy 0.18**, with a local HTTP control API. This is
 **Stage 1** of a three-stage project (Stage 2: Python CV app feeds state via the API; Stage 3: Rust
-solver). See `README.md` §intro for the staging.
+solver). Stage 1 is built and working; further work builds on it. See `README.md` for the staging
+and the binding contract.
 
 ## The spec is the README — and it's binding
 `README.md` is the source of truth for the **cube-state JSON contract, color scheme, coordinate
 system, per-face read order, and HTTP semantics**. Other stages depend on these exactly. If code and
 README disagree, the README wins. Don't change the contract casually — downstream tools rely on it.
 
-## Building Stage 1: read `IMPLEMENTATION_PLAN.md`
-The build is structured as an **orchestrated, verification-gated** effort: the main agent acts as an
-orchestrator that briefs subagents to write each module and then verifies against acceptance gates,
-rather than writing code itself. `IMPLEMENTATION_PLAN.md` contains the frozen module interface (§1),
-the per-phase subagent briefs, and the gates. Start there.
+## How we work here: orchestrate, don't hand-code
+**Default behaviour for any non-trivial task in this repo.** The main agent acts as an
+**orchestrator**, not a coder: you hold the long-running context and keep the work marching toward the
+goal, but you brief subagents to do the actual typing and verify their output against acceptance
+gates. Don't write implementation code yourself beyond tiny glue/fixups when a subagent gets within a
+line of done. Trivial one-liners and pure doc/chore edits are fine to do directly — reach for the
+orchestration loop whenever the work is a real feature, phase, refactor, or non-obvious bug.
+
+For each unit of work:
+
+1. **Plan & freeze the contract first.** Decide the module/function interface and the **acceptance
+   gate** — the exact commands that prove it works — *before* delegating. For larger efforts, write it
+   down as a plan under `docs/plans/` (git-ignored). Keep `TodoWrite` current: one task per unit,
+   `in_progress` → `completed` only on a green gate.
+2. **Brief a subagent** (`Agent`, `subagent_type: general-purpose` unless a specialized one fits).
+   Tell it: read `README.md` and `CLAUDE.md` first; implement only the listed files; don't modify
+   files owned by another unit; match the agreed interface exactly — other modules depend on it; run
+   the acceptance command itself and report the output before returning.
+3. **Verify yourself — don't trust the report.** Re-run the gate commands (`cargo test`, `cargo clippy
+   -- -D warnings`, `cargo build`, the GUI-screenshot + `curl` smoke checks). Read the changed files
+   and confirm they match the contract and the repo conventions.
+4. **If the gate fails,** send the *same* subagent the exact error via `SendMessage` (keeps its
+   context) and have it fix. Re-verify. Only advance when green.
+5. **Commit** after each green gate: `git add -A && git commit -m "<summary>"` — one commit per
+   completed, green unit. Never let a unit land red: a failing test/clippy/build blocks the commit.
+
+**Guardrails:**
+- The interface is **frozen** once agreed. If a later unit truly needs to change it, stop, amend the
+  written interface/plan first, then re-brief — don't let subagents silently diverge.
+- **Parallelism:** units that touch disjoint files may run as concurrent `Agent` calls; anything
+  sharing files runs sequentially.
+- The pure `CubeCore`, the 18 absolute `Move`s, `MoveQueue`, the animation system, and the
+  `POST /move` / `POST /state` JSON contract are the **frozen engine** Stages 2 & 3 depend on. New
+  work is a presentation/input layer that ends at `MoveQueue` / `ApplyState`; don't reach into the
+  engine or change the contract just to add a feature.
 
 ## Commands
 ```bash
@@ -40,7 +71,7 @@ verifying it from an agent, launch in the background, screenshot with `screencap
   `.claude/settings.json`. If a routine command still prompts, add it there rather than re-approving
   it every session.
 
-## Architecture (target)
+## Architecture
 ```
 src/
 ├── main.rs        # App + plugin wiring: CubePlugin, CameraPlugin, UiPlugin, ApiPlugin
@@ -61,22 +92,9 @@ multiples. `POST /state` paints raw sticker colors, so physically impossible arr
 ## Conventions
 - Rust 2021, `cargo fmt` defaults, clippy clean under `-D warnings`.
 - Lib stack is locked: native `bevy_ui` + `tiny_http` + serde. Don't swap to egui/axum.
-- Commit per completed, green-gated phase.
+- Commit per completed, green-gated unit of work.
 
 ## Tooling notes (this machine)
 - Rust stable via rustup; `~/.cargo/bin` is on PATH via `.zprofile` (a fix was needed — the
   hard-coded PATH there was overriding `~/.cargo/env`). New terminals resolve `cargo` fine.
 - System linker is Xcode Command Line Tools `clang` — verified working.
-
-## RustRover setup (optional, editor/debugger only — not required to build)
-RustRover does **not** do the linking (the Rust toolchain + system `clang` do, already working). It
-adds completion, navigation, inline Clippy, and an LLDB debugger. To wire it up:
-1. **Open** the `cube` folder (File ▸ Open → select the dir with `Cargo.toml`); let it index.
-2. **Toolchain:** Settings ▸ Languages & Frameworks ▸ Rust → confirm *Toolchain location* is
-   `~/.cargo/bin` (auto-detected).
-3. **Std navigation:** install std sources for go-to-definition into `std`:
-   `rustup component add rust-src` (RustRover may also offer this via a prompt).
-4. **Optional power:** Settings ▸ Rust ▸ External Linters → enable **Clippy** for richer on-the-fly
-   warnings; enable *Rustfmt* on save. Create a **Cargo** run config for `run`/`test`; the bundled
-   LLDB gives breakpoint debugging with no extra setup.
-   (Optional, skippable: a faster linker like `lld` for quicker Bevy dev builds — not required.)
