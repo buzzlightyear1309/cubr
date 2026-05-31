@@ -25,7 +25,7 @@ fn bench_deep_solves() {
     let pdbs = build_or_load_pdbs();
     println!("PDB load/build took {:?}", t0.elapsed());
 
-    let cap = Duration::from_secs(60);
+    let cap = Duration::from_secs(30);
     let mut seed = 0xBEEF_0001u32;
 
     for trial in 0..10 {

@@ -9,7 +9,7 @@
 
 use super::coords::{apply, index_to_move, Cubies, SOLVED};
 use super::pdb::{corner_index, edge_index_a, edge_index_b, Pdbs, SearchTables};
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 /// How often (in expanded nodes) the DFS polls the cancel flag.
@@ -46,7 +46,11 @@ enum Dfs {
     /// (the next threshold to try), or [`INF`] if no child exceeded it / there were no
     /// children to expand.
     Min(u8),
-    /// The cancel flag was observed set; the search is aborting.
+    /// The probe bailed early because a stop flag was observed set — either the caller's
+    /// `cancel` flag, or (in the parallel driver) the shared `found` flag once another
+    /// worker has produced a solution at the current threshold. The two are folded into
+    /// one variant: in both cases the answer this subtree could still yield is no longer
+    /// wanted, so the search unwinds immediately.
     Cancelled,
 }
 
@@ -185,6 +189,15 @@ impl Coord {
 /// Bounded coordinate-space DFS, shared by the single- and multi-threaded drivers.
 /// Identical control flow to [`dfs`] but operating on [`Coord`] with the dense-table
 /// heuristic and transitions. `path` is the move-index stack from the search root.
+///
+/// `found` is the shared early-bail flag: every [`CANCEL_CHECK_INTERVAL`] expanded nodes
+/// the probe checks `found.load() || cancel.load()` and, if either is set, unwinds fast
+/// with [`Dfs::Cancelled`]. In the parallel driver `found` is raised the instant any
+/// worker produces a solution at the current threshold, so sibling subtrees stop grinding
+/// immediately instead of running to completion before the join. The single-threaded
+/// driver passes a never-set `found`, so this is a no-op there. Bailing only ever
+/// *discards* in-flight work — it never changes which threshold first yields a solution,
+/// so optimality is preserved.
 #[allow(clippy::too_many_arguments)]
 fn dfs_coord(
     node: Coord,
@@ -194,6 +207,7 @@ fn dfs_coord(
     prev_move: Option<usize>,
     pdbs: &Pdbs,
     tables: &SearchTables,
+    found: &AtomicBool,
     cancel: &AtomicBool,
     path: &mut Vec<usize>,
     nodes: &mut u64,
@@ -207,7 +221,9 @@ fn dfs_coord(
     }
 
     *nodes += 1;
-    if nodes.is_multiple_of(CANCEL_CHECK_INTERVAL) && cancel.load(Ordering::Relaxed) {
+    if nodes.is_multiple_of(CANCEL_CHECK_INTERVAL)
+        && (found.load(Ordering::Relaxed) || cancel.load(Ordering::Relaxed))
+    {
         return Dfs::Cancelled;
     }
 
@@ -226,6 +242,7 @@ fn dfs_coord(
             Some(mv),
             pdbs,
             tables,
+            found,
             cancel,
             path,
             nodes,
@@ -252,6 +269,9 @@ fn ida_coord_single(
     if start == solved {
         return Some(Vec::new());
     }
+    // The single-threaded path has no peer worker to short-circuit it, so `found` stays
+    // unset and the early-bail in `dfs_coord` reduces to the plain `cancel` poll.
+    let found = AtomicBool::new(false);
     let mut threshold = pdbs.h_index(start.ci, start.ai, start.bi);
     let mut path: Vec<usize> = Vec::new();
     let mut nodes: u64 = 0;
@@ -260,7 +280,7 @@ fn ida_coord_single(
             return None;
         }
         match dfs_coord(
-            start, solved, 0, threshold, None, pdbs, tables, cancel, &mut path, &mut nodes,
+            start, solved, 0, threshold, None, pdbs, tables, &found, cancel, &mut path, &mut nodes,
         ) {
             Dfs::Found(p) => return Some(p),
             Dfs::Cancelled => return None,
@@ -274,80 +294,114 @@ fn ida_coord_single(
     }
 }
 
-/// Per-threshold result of probing a single root-move subset.
-enum RootProbe {
-    /// A solution was found at the current threshold (carries the full move-index path).
-    Found(Vec<usize>),
-    /// Exhausted the threshold with no solution. The next-threshold candidate has already
-    /// been folded into the shared `best_next` atomic, so it is not carried here.
-    Min,
-    /// Aborted (the shared `found`/`cancel` flag was observed set).
-    Stopped,
+/// One unit of fine-grained parallel work: a depth-2 node of the search tree, tagged with
+/// the two-move prefix that reaches it. The parallel driver hands these out one at a time
+/// so the cost of a heavy subtree falls on a single puller rather than bounding the whole
+/// iteration (as the old coarse round-robin-over-18-roots split did).
+#[derive(Clone, Copy)]
+struct Task {
+    /// The coordinate after applying `prefix[0]` then `prefix[1]` to the start.
+    coord: Coord,
+    /// The two move indices `[m1, m2]` that reach `coord` from the start.
+    prefix: [usize; 2],
+    /// The previous move (`prefix[1]`), for the redundancy pruning of `coord`'s children.
+    prev_move: usize,
 }
 
-/// Probe one root-move subset for `threshold`: expand each assigned root move and DFS
-/// below it. Bails early if another thread already found a solution (`found`) or the
-/// caller cancelled. Reduces the next-threshold candidate into `best_next` (atomic min).
-#[allow(clippy::too_many_arguments)]
-fn probe_roots(
-    roots: &[usize],
+/// What the single-threaded "expand the top two levels" pass produced for one threshold.
+enum Expansion {
+    /// `start`/a depth-1 node *is* solved within the threshold — the optimal path is known
+    /// without touching the frontier (carries the move-index path).
+    Solved(Vec<usize>),
+    /// The frontier of admissible depth-2 nodes to search this threshold. `best_next` holds
+    /// the smallest f-value of any node *pruned* at depth 0 or 1 (folded in exactly as
+    /// `ida_coord_single` would), so the frontier search only needs to min into it further.
+    Frontier { tasks: Vec<Task>, best_next: u8 },
+}
+
+/// Mirror exactly what [`dfs_coord`] / [`ida_coord_single`] do at depths 0 and 1 for the
+/// given `threshold`, single-threaded and cheap (≤ 18·~15 nodes):
+///
+/// - **Depth 0** (`g = 0`, `f = h(start)`): if `f > threshold` the whole search is pruned —
+///   return [`Expansion::Frontier`] with `best_next = f` and no tasks. (`start == solved`
+///   is handled by the caller before the loop, matching `ida_coord_single`.)
+/// - **Depth 1** (`g = 1`) for each legal root `m1`: `c1 = start.neighbor(m1)`,
+///   `f = 1 + h(c1)`. If `f > threshold`, fold `f` into `best_next` (this depth-1 node is
+///   pruned; its depth-2 children are *not* in play this threshold). Else if `c1 == solved`
+///   the optimum is `[m1]` (`1 <= threshold` here since `f = 1 <= threshold`). Otherwise the
+///   node is f-admissible, so enqueue each of its legal depth-2 children as a [`Task`].
+///
+/// This makes the parallel driver's `best_next` identical to the single-threaded sequence,
+/// which is what keeps the parallel optimum equal to the single-threaded optimum (an
+/// overshooting threshold could otherwise return a suboptimal solution).
+fn expand_top_two_levels(
     start: Coord,
     solved: Coord,
     threshold: u8,
+    roots: &[usize],
     pdbs: &Pdbs,
     tables: &SearchTables,
-    found: &AtomicBool,
-    best_next: &AtomicU8,
-    cancel: &AtomicBool,
-) -> RootProbe {
-    // Root node: f = h(start) (g = 0). If it already exceeds the threshold, this subset
-    // contributes that f as its next-threshold candidate and nothing else.
+) -> Expansion {
+    // Depth 0: prune the entire search if even the start's heuristic exceeds the threshold.
     let hstart = pdbs.h_index(start.ci, start.ai, start.bi);
     if hstart > threshold {
-        best_next.fetch_min(hstart, Ordering::Relaxed);
-        return RootProbe::Min;
+        return Expansion::Frontier {
+            tasks: Vec::new(),
+            best_next: hstart,
+        };
     }
 
-    let mut min = INF;
-    let mut nodes: u64 = 0;
-    let mut path: Vec<usize> = Vec::with_capacity(threshold as usize + 1);
-    for &mv in roots {
-        if found.load(Ordering::Relaxed) || cancel.load(Ordering::Relaxed) {
-            return RootProbe::Stopped;
+    let mut best_next = INF;
+    let mut tasks: Vec<Task> = Vec::new();
+    for &m1 in roots {
+        let c1 = start.neighbor(tables, m1);
+        let f1 = 1u8.saturating_add(pdbs.h_index(c1.ci, c1.ai, c1.bi));
+        if f1 > threshold {
+            // Depth-1 node pruned: contributes its f as a next-threshold candidate; its
+            // depth-2 children do not enter the frontier this threshold.
+            best_next = best_next.min(f1);
+            continue;
         }
-        let child = start.neighbor(tables, mv);
-        path.clear();
-        path.push(mv);
-        match dfs_coord(
-            child,
-            solved,
-            1,
-            threshold,
-            Some(mv),
-            pdbs,
-            tables,
-            cancel,
-            &mut path,
-            &mut nodes,
-        ) {
-            Dfs::Found(p) => return RootProbe::Found(p),
-            Dfs::Cancelled => return RootProbe::Stopped,
-            Dfs::Min(m) => min = min.min(m),
+        if c1 == solved {
+            // Optimal one-move solution (f1 = 1 <= threshold).
+            return Expansion::Solved(vec![m1]);
+        }
+        // f-admissible depth-1 node: expand its legal depth-2 children into tasks.
+        for m2 in 0..18usize {
+            if redundant(Some(m1), m2) {
+                continue;
+            }
+            let c2 = c1.neighbor(tables, m2);
+            tasks.push(Task {
+                coord: c2,
+                prefix: [m1, m2],
+                prev_move: m2,
+            });
         }
     }
-    // Fold this subset's next-threshold candidate into the shared min.
-    if min != INF {
-        best_next.fetch_min(min, Ordering::Relaxed);
-    }
-    RootProbe::Min
+    Expansion::Frontier { tasks, best_next }
 }
 
-/// Multi-threaded coordinate IDA*. The legal root moves are partitioned into disjoint
-/// subsets, one per thread; each thread DFS-searches its subset for the *current*
-/// threshold. The threshold rises only when **all** threads exhaust it without a
-/// solution, so the first threshold at which any thread reports a solution is the
-/// optimum — returning any path found at that threshold is optimal.
-fn ida_coord_parallel(
+/// Multi-threaded coordinate IDA* with a **depth-2 frontier** and **dynamic work-pulling**.
+///
+/// Each threshold iteration:
+/// 1. Single-threaded, build the frontier of admissible depth-2 nodes via
+///    [`expand_top_two_levels`] (which also handles the length-0/1 solutions exactly and
+///    seeds `best_next` with every depth-0/1 prune, so the per-threshold `best_next` matches
+///    [`ida_coord_single`] precisely — this is what preserves optimality).
+/// 2. A [`std::thread::scope`] pool of `threads` workers each `fetch_add(1)` task indices
+///    from a shared [`AtomicUsize`] cursor until exhausted. Because tasks ≫ threads
+///    (~200+), a heavy subtree is pulled by one worker while the others race ahead through
+///    the rest — far better balanced than the old static split. Each task DFS-searches from
+///    its depth-2 coordinate with `g = 2` and `path` pre-seeded to its two-move prefix.
+/// 3. On a [`Dfs::Found`], the first writer raises `found` and stores the returned path
+///    (already complete, since `path` was seeded with the prefix). All workers poll `found`
+///    and bail. Every task's [`Dfs::Min`] is reduced into a shared `best_next`
+///    ([`AtomicU8::fetch_min`]).
+///
+/// All workers share the single `threshold`, so the first threshold at which *any* task
+/// finds a solution is the optimum — returning that path is optimal.
+fn ida_coord_frontier(
     start: Coord,
     solved: Coord,
     roots: &[usize],
@@ -356,50 +410,75 @@ fn ida_coord_parallel(
     tables: &SearchTables,
     cancel: &AtomicBool,
 ) -> Option<Vec<usize>> {
-    // Round-robin the root moves into `threads` disjoint chunks (balances the heavy
-    // first roots across workers better than contiguous slicing).
-    let mut buckets: Vec<Vec<usize>> = vec![Vec::new(); threads];
-    for (i, &mv) in roots.iter().enumerate() {
-        buckets[i % threads].push(mv);
-    }
-    buckets.retain(|b| !b.is_empty());
-
     let mut threshold = pdbs.h_index(start.ci, start.ai, start.bi);
     loop {
         if cancel.load(Ordering::Relaxed) {
             return None;
         }
 
+        // Step 1: build this threshold's frontier (also resolves length-0/1 optima and
+        // seeds best_next with the depth-0/1 prunes, matching ida_coord_single exactly).
+        let (tasks, base_next) =
+            match expand_top_two_levels(start, solved, threshold, roots, pdbs, tables) {
+                Expansion::Solved(path) => return Some(path),
+                Expansion::Frontier { tasks, best_next } => (tasks, best_next),
+            };
+
+        // Step 2 + 3: dynamic work-pulling over the frontier.
         let found = AtomicBool::new(false);
-        let best_next = AtomicU8::new(INF);
+        let best_next = AtomicU8::new(base_next);
+        let cursor = AtomicUsize::new(0);
         let solution: Mutex<Option<Vec<usize>>> = Mutex::new(None);
 
         std::thread::scope(|s| {
-            let handles: Vec<_> = buckets
-                .iter()
-                .map(|bucket| {
-                    let found = &found;
-                    let best_next = &best_next;
-                    let solution = &solution;
-                    s.spawn(move || {
-                        match probe_roots(
-                            bucket, start, solved, threshold, pdbs, tables, found, best_next,
+            for _ in 0..threads {
+                let found = &found;
+                let best_next = &best_next;
+                let cursor = &cursor;
+                let solution = &solution;
+                let tasks = &tasks;
+                s.spawn(move || {
+                    let mut nodes: u64 = 0;
+                    let mut path: Vec<usize> = Vec::with_capacity(threshold as usize + 1);
+                    loop {
+                        if found.load(Ordering::Relaxed) || cancel.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        let i = cursor.fetch_add(1, Ordering::Relaxed);
+                        let Some(task) = tasks.get(i) else {
+                            return; // frontier exhausted
+                        };
+                        path.clear();
+                        path.extend_from_slice(&task.prefix);
+                        match dfs_coord(
+                            task.coord,
+                            solved,
+                            2,
+                            threshold,
+                            Some(task.prev_move),
+                            pdbs,
+                            tables,
+                            found,
                             cancel,
+                            &mut path,
+                            &mut nodes,
                         ) {
-                            RootProbe::Found(p) => {
+                            Dfs::Found(p) => {
                                 // First writer wins; any solution at this threshold is
-                                // optimal, so we don't compare lengths.
+                                // optimal, so lengths are not compared. `p` already carries
+                                // the two-move prefix (path was seeded with it).
                                 if !found.swap(true, Ordering::Relaxed) {
                                     *solution.lock().unwrap() = Some(p);
                                 }
+                                return;
                             }
-                            RootProbe::Min | RootProbe::Stopped => {}
+                            Dfs::Cancelled => return,
+                            Dfs::Min(m) => {
+                                best_next.fetch_min(m, Ordering::Relaxed);
+                            }
                         }
-                    })
-                })
-                .collect();
-            for h in handles {
-                let _ = h.join();
+                    }
+                });
             }
         });
 
@@ -411,7 +490,7 @@ fn ida_coord_parallel(
         }
         let next = best_next.load(Ordering::Relaxed);
         if next == INF || next <= threshold {
-            // No child exceeded the threshold anywhere: the space is exhausted with no
+            // No node exceeded the threshold anywhere: the space is exhausted with no
             // solution (cannot happen for a validated solvable cube, but guard anyway).
             return None;
         }
@@ -437,17 +516,31 @@ pub(crate) fn search(
 
     // Legal root moves under the redundancy pruning (root forbids nothing, so all 18).
     let roots: Vec<usize> = (0..18usize).filter(|&mv| !redundant(None, mv)).collect();
-    let parallelism = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1);
-    let threads = parallelism.min(roots.len());
+    let threads = solver_threads();
 
     let idxs = if threads <= 1 || roots.len() <= 1 {
         ida_coord_single(start_coord, solved, pdbs, tables, cancel)
     } else {
-        ida_coord_parallel(start_coord, solved, &roots, threads, pdbs, tables, cancel)
+        ida_coord_frontier(start_coord, solved, &roots, threads, pdbs, tables, cancel)
     };
     idxs.map(|idxs| idxs.into_iter().map(index_to_move).collect())
+}
+
+/// Resolve the worker-thread count for the parallel driver. `CUBR_SOLVER_THREADS`, if set
+/// to a parseable positive integer, overrides it (handy for benchmarking / reproducibility
+/// and for forcing the single-threaded path with `1`); absent, unparseable, or `0` falls
+/// back to [`std::thread::available_parallelism`] (then `1` if even that is unavailable).
+fn solver_threads() -> usize {
+    if let Ok(s) = std::env::var("CUBR_SOLVER_THREADS") {
+        if let Ok(n) = s.trim().parse::<usize>() {
+            if n >= 1 {
+                return n;
+            }
+        }
+    }
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
 }
 
 #[cfg(test)]
@@ -749,6 +842,62 @@ mod tests {
             assert_eq!(
                 pdb_len, zero_len,
                 "PDB heuristic changed the optimum (pdb={pdb_len} zero={zero_len})"
+            );
+        }
+    }
+
+    /// The depth-2 frontier parallel driver must return solutions of the SAME length as the
+    /// single-threaded driver (its reference optimum) for medium-depth states, and both must
+    /// actually re-solve the cube. This is the optimality guard for the dynamic-balancing
+    /// rewrite: a per-threshold `best_next` that diverged from the single-threaded sequence
+    /// could let an overshooting threshold return a suboptimal answer; equal lengths across
+    /// ~20 states prove it does not.
+    #[test]
+    #[ignore = "builds the full ~85 MB PDBs and runs ~20 medium-depth optimal solves on both \
+                drivers (slow; run in release with --ignored)"]
+    fn parallel_matches_single_optimum() {
+        let pdbs = Pdbs::generate();
+        let tables = SearchTables::build();
+        let solved = Coord::of(&SOLVED);
+        // All 18 legal root moves (the root prunes nothing) — same set the driver builds.
+        let roots: Vec<usize> = (0..18usize).filter(|&mv| !redundant(None, mv)).collect();
+        // Force real fan-out independent of the host's core count.
+        let threads = 8usize;
+
+        let mut seed = 0xBEEF_5A17u32;
+        for trial in 0..20 {
+            // Medium-depth scrambles (12..=16 moves) — deep enough to exercise the
+            // multi-iteration frontier, shallow enough to stay tractable for both drivers.
+            let len = 12 + (lcg(&mut seed) as usize % 5); // 12..=16
+            let mut cubies = SOLVED;
+            for _ in 0..len {
+                cubies = apply(&cubies, (lcg(&mut seed) as usize) % 18);
+            }
+            let start = Coord::of(&cubies);
+
+            let c1 = never();
+            let c2 = never();
+            let single = ida_coord_single(start, solved, &pdbs, &tables, &c1).expect("solvable");
+            let parallel = ida_coord_frontier(start, solved, &roots, threads, &pdbs, &tables, &c2)
+                .expect("solvable");
+
+            assert_eq!(
+                single.len(),
+                parallel.len(),
+                "trial {trial}: parallel length {} != single optimum {} (scramble len {len})",
+                parallel.len(),
+                single.len(),
+            );
+            // Both paths must drive the state back to solved.
+            assert_eq!(
+                apply_path(&cubies, &single),
+                SOLVED,
+                "trial {trial}: single-threaded solution did not solve the state"
+            );
+            assert_eq!(
+                apply_path(&cubies, &parallel),
+                SOLVED,
+                "trial {trial}: parallel solution did not solve the state"
             );
         }
     }
