@@ -348,6 +348,189 @@ pub(crate) fn edge_ori_unrank(rank: u8) -> [u8; 6] {
     out
 }
 
+// --- Two-phase (Kociemba) ranking primitives. ---
+//
+// These are entirely internal to the two-phase solver (`super::two_phase`). They need
+// only be bijections over their stated ranges with `rank ∘ unrank = id` — they do NOT
+// have to match any external (kewb) numbering. They mirror the MSB-first /
+// fill-in-reverse style of [`corner_ori_rank`] / [`corner_ori_unrank`].
+
+/// Rank of the edge-orientation vector over all 12 edges. Only the first 11 are free;
+/// the 12th is fixed by the parity `Σ eo ≡ 0 (mod 2)`. Range `0..2048` (= 2^11).
+/// MSB is `eo[0]`.
+pub(crate) fn eo12_rank(eo: &[u8; 12]) -> u16 {
+    let mut rank = 0u16;
+    for &e in eo.iter().take(11) {
+        rank = rank * 2 + (e & 1) as u16;
+    }
+    rank
+}
+
+/// Inverse of [`eo12_rank`]: reconstructs all 12 entries, the 12th chosen so the total
+/// orientation is `≡ 0 (mod 2)`.
+pub(crate) fn eo12_unrank(rank: u16) -> [u8; 12] {
+    let mut out = [0u8; 12];
+    let mut rank = rank;
+    let mut sum = 0u16;
+    for slot in out.iter_mut().take(11).rev() {
+        let b = (rank & 1) as u8;
+        *slot = b;
+        rank >>= 1;
+        sum += b as u16;
+    }
+    out[11] = ((2 - (sum % 2)) % 2) as u8;
+    out
+}
+
+/// `binom(n, k)` (= C(n, k)) for the small ranges used by the E-slice combination
+/// coordinate; returns 0 when `k > n` (the combinatorial-number-system convention).
+fn binom(n: u16, k: u16) -> u16 {
+    if k > n {
+        return 0;
+    }
+    let k = k.min(n - k);
+    let mut num = 1u32;
+    for i in 0..k {
+        num = num * (n - i) as u32 / (i + 1) as u32;
+    }
+    num as u16
+}
+
+/// E-slice **combination** coordinate: which 4 of the 12 edge *slots* currently hold an
+/// E-slice edge (id ≤ 3), unordered. Solved (slots {0,1,2,3}) → 0. Range `0..495`
+/// (= C(12, 4)). Combinatorial number system: for the sorted occupied slots
+/// `p0<p1<p2<p3`, the rank is `binom(p0,1)+binom(p1,2)+binom(p2,3)+binom(p3,4)`.
+pub(crate) fn eslice_combo_rank(ep: &[u8; 12]) -> u16 {
+    let mut k = 1u16;
+    let mut rank = 0u16;
+    for (p, &id) in ep.iter().enumerate() {
+        if id <= 3 {
+            rank += binom(p as u16, k);
+            k += 1;
+        }
+    }
+    rank
+}
+
+/// Inverse of [`eslice_combo_rank`]: decode the 4 occupied slots (combinatorial number
+/// system, largest first), then build a FULL VALID permutation `ep` by placing the four
+/// E-slice ids `0,1,2,3` (in increasing slot order) at the decoded slots and filling the
+/// other 8 slots with `4..=11` in increasing order.
+pub(crate) fn eslice_combo_unrank(rank: u16) -> [u8; 12] {
+    // Decode the 4 slot indices (descending k = 4,3,2,1).
+    let mut rem = rank;
+    let mut slots = [0u16; 4];
+    for k in (1..=4u16).rev() {
+        // Largest n with binom(n, k) <= rem.
+        let mut n = k - 1;
+        while binom(n + 1, k) <= rem {
+            n += 1;
+        }
+        rem -= binom(n, k);
+        slots[(k - 1) as usize] = n; // slots end up sorted ascending in index k-1
+    }
+    let mut ep = [0u8; 12];
+    let mut occupied = [false; 12];
+    for (j, &s) in slots.iter().enumerate() {
+        ep[s as usize] = j as u8; // E-slice ids 0,1,2,3 in increasing slot order
+        occupied[s as usize] = true;
+    }
+    let mut next = 4u8;
+    for (p, occ) in occupied.iter().enumerate() {
+        if !*occ {
+            ep[p] = next;
+            next += 1;
+        }
+    }
+    ep
+}
+
+/// UD-edge **permutation** coordinate: the 8 U/D edges (ids 4..=11) within slots 4..=11.
+/// Requires `ep[4..12]` to be exactly the set `{4..=11}` (always true in G1 / after
+/// phase 1). Solved → 0. Range `0..40320`.
+pub(crate) fn ud_ep_rank(ep: &[u8; 12]) -> u16 {
+    let a = [
+        ep[4] - 4,
+        ep[5] - 4,
+        ep[6] - 4,
+        ep[7] - 4,
+        ep[8] - 4,
+        ep[9] - 4,
+        ep[10] - 4,
+        ep[11] - 4,
+    ];
+    perm_rank8(&a) as u16
+}
+
+/// Inverse of [`ud_ep_rank`]: builds a full `ep` with the E-slice slots solved
+/// (`0,1,2,3`) and the 8 U/D slots filled by the unranked permutation (shifted by +4).
+pub(crate) fn ud_ep_unrank(rank: u16) -> [u8; 12] {
+    let p = perm_unrank8(rank as u32);
+    [
+        0,
+        1,
+        2,
+        3,
+        p[0] + 4,
+        p[1] + 4,
+        p[2] + 4,
+        p[3] + 4,
+        p[4] + 4,
+        p[5] + 4,
+        p[6] + 4,
+        p[7] + 4,
+    ]
+}
+
+/// Lehmer (factorial-base) rank of a permutation of `0..4`. Range `0..24`.
+fn perm_rank4(p: &[u8; 4]) -> u8 {
+    const FACT: [u8; 4] = [6, 2, 1, 1]; // 3! .. 0!
+    let mut rank = 0u8;
+    for i in 0..4 {
+        let mut smaller = 0u8;
+        for j in (i + 1)..4 {
+            if p[j] < p[i] {
+                smaller += 1;
+            }
+        }
+        rank += smaller * FACT[i];
+    }
+    rank
+}
+
+/// Inverse of [`perm_rank4`]: factorial-base unrank to a permutation of `0..4`.
+fn perm_unrank4(rank: u8) -> [u8; 4] {
+    const FACT: [u8; 4] = [6, 2, 1, 1]; // 3! .. 0!
+    let mut avail: [u8; 4] = [0, 1, 2, 3];
+    let mut len = 4usize;
+    let mut rank = rank;
+    let mut out = [0u8; 4];
+    for (i, slot) in out.iter_mut().enumerate() {
+        let f = FACT[i];
+        let idx = (rank / f) as usize;
+        rank %= f;
+        *slot = avail[idx];
+        for k in idx..(len - 1) {
+            avail[k] = avail[k + 1];
+        }
+        len -= 1;
+    }
+    out
+}
+
+/// E-slice edge **permutation** coordinate: the 4 E-slice edges (ids 0..=3) within slots
+/// 0..=3 (their home slots in G1). Solved → 0. Range `0..24`.
+pub(crate) fn e_ep_rank(ep: &[u8; 12]) -> u8 {
+    perm_rank4(&[ep[0], ep[1], ep[2], ep[3]])
+}
+
+/// Inverse of [`e_ep_rank`]: builds a full `ep` with the 4 E-slice slots filled by the
+/// unranked permutation of `0..4` and the 8 U/D slots solved (`4..=11`).
+pub(crate) fn e_ep_unrank(rank: u8) -> [u8; 12] {
+    let q = perm_unrank4(rank);
+    [q[0], q[1], q[2], q[3], 4, 5, 6, 7, 8, 9, 10, 11]
+}
+
 // --- Generic nibble-packed BFS-by-sweep pattern-DB generator. ---
 
 /// Read the nibble at index `idx` from a packed blob.
@@ -526,6 +709,118 @@ mod tests {
             seen[rank as usize] = true;
         }
         assert!(seen.into_iter().all(|b| b));
+    }
+
+    // --- 1b. Two-phase ranking bijections (exhaustive). ---
+
+    #[test]
+    fn eo12_roundtrip_and_parity() {
+        let mut seen = vec![false; 2048];
+        for rank in 0..2048u16 {
+            let eo = eo12_unrank(rank);
+            for &v in &eo {
+                assert!(v < 2);
+            }
+            let sum: u16 = eo.iter().map(|&v| v as u16).sum();
+            assert_eq!(sum % 2, 0, "unrank({rank}) violates even parity: {eo:?}");
+            let back = eo12_rank(&eo);
+            assert_eq!(back, rank, "eo12 roundtrip failed at {rank}");
+            assert!(!seen[rank as usize], "eo12 rank {rank} produced twice");
+            seen[rank as usize] = true;
+        }
+        assert!(seen.into_iter().all(|b| b), "eo12 not a bijection");
+    }
+
+    #[test]
+    fn eslice_combo_roundtrip_and_bijection() {
+        let mut seen = vec![false; 495];
+        for rank in 0..495u16 {
+            let ep = eslice_combo_unrank(rank);
+            // valid permutation of 0..12
+            let mut bits = 0u16;
+            for &v in &ep {
+                assert!(v < 12);
+                bits |= 1 << v;
+            }
+            assert_eq!(bits, 0xFFF, "unrank({rank}) is not a permutation: {ep:?}");
+            // exactly 4 slots hold an E-slice edge (id <= 3)
+            let occ = ep.iter().filter(|&&v| v <= 3).count();
+            assert_eq!(
+                occ, 4,
+                "unrank({rank}) does not have 4 E-slice slots: {ep:?}"
+            );
+            let back = eslice_combo_rank(&ep);
+            assert_eq!(back, rank, "eslice_combo roundtrip failed at {rank}");
+            assert!(
+                !seen[rank as usize],
+                "eslice_combo rank {rank} produced twice"
+            );
+            seen[rank as usize] = true;
+        }
+        assert!(seen.into_iter().all(|b| b), "eslice_combo not a bijection");
+        assert_eq!(
+            eslice_combo_rank(&SOLVED.ep),
+            0,
+            "solved E-slice combo must be 0"
+        );
+    }
+
+    #[test]
+    fn ud_ep_roundtrip_and_bijection() {
+        let mut seen = vec![false; 40320];
+        for rank in 0..40320u16 {
+            let ep = ud_ep_unrank(rank);
+            // E-slice slots solved, U/D slots a permutation of 4..12.
+            assert_eq!(
+                &ep[0..4],
+                &[0, 1, 2, 3],
+                "unrank({rank}) E-slice slots not solved"
+            );
+            let mut bits = 0u16;
+            for &v in &ep[4..12] {
+                assert!((4..12).contains(&v));
+                bits |= 1 << v;
+            }
+            assert_eq!(
+                bits, 0xFF0,
+                "unrank({rank}) U/D edges not a permutation: {ep:?}"
+            );
+            let back = ud_ep_rank(&ep);
+            assert_eq!(back, rank, "ud_ep roundtrip failed at {rank}");
+            assert!(!seen[rank as usize], "ud_ep rank {rank} produced twice");
+            seen[rank as usize] = true;
+        }
+        assert!(seen.into_iter().all(|b| b), "ud_ep not a bijection");
+        assert_eq!(ud_ep_rank(&SOLVED.ep), 0, "solved UD-edge perm must be 0");
+    }
+
+    #[test]
+    fn e_ep_roundtrip_and_bijection() {
+        let mut seen = vec![false; 24];
+        for rank in 0..24u8 {
+            let ep = e_ep_unrank(rank);
+            // U/D slots solved, E-slice slots a permutation of 0..4.
+            assert_eq!(
+                &ep[4..12],
+                &[4, 5, 6, 7, 8, 9, 10, 11],
+                "unrank({rank}) U/D slots not solved"
+            );
+            let mut bits = 0u8;
+            for &v in &ep[0..4] {
+                assert!(v < 4);
+                bits |= 1 << v;
+            }
+            assert_eq!(
+                bits, 0x0F,
+                "unrank({rank}) E-slice edges not a permutation: {ep:?}"
+            );
+            let back = e_ep_rank(&ep);
+            assert_eq!(back, rank, "e_ep roundtrip failed at {rank}");
+            assert!(!seen[rank as usize], "e_ep rank {rank} produced twice");
+            seen[rank as usize] = true;
+        }
+        assert!(seen.into_iter().all(|b| b), "e_ep not a bijection");
+        assert_eq!(e_ep_rank(&SOLVED.ep), 0, "solved E-slice perm must be 0");
     }
 
     // --- 2. Compose matches kewb EXACTLY (the parity guard). ---

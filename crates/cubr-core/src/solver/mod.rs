@@ -31,6 +31,7 @@ mod coords;
 mod facelet;
 mod pdb;
 mod search;
+mod two_phase;
 
 pub use pdb::Pdbs;
 use pdb::SearchTables;
