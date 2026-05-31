@@ -38,7 +38,7 @@ and set the cube.
 | Mouse wheel | Zoom |
 | `L` | Snap the camera back to level / upright |
 | Left panel | Per-move buttons (Standard or Beginner scheme) + **Reset** |
-| Right panel | **Solve** (compute the optimal solution) + **Run** (animate it) |
+| Right panel | **Solve** (compute the optimal solution) + **Run** (animate it) + **Live** (track your moves and update the steps as you go) |
 
 ![The cubr window: move panel + Reset on the left, Solve/Run on the right](docs/cubr.png)
 
@@ -96,9 +96,13 @@ git tag v0.1.0 && git push origin v0.1.0
 - **Notation**: solutions render as Standard notation (`R U R' U'`) or, in Beginner mode, as
   view-relative steps (`Front CW`, `Up 180`) that re-label live as you orbit. **Run** animates the
   solution one move at a time and highlights the current step.
-- **Performance**: most states solve in milliseconds; the rare deepest (distance ~18–20) states can
-  take a few seconds. The solve runs off the render thread, so the window stays responsive, and a
-  Reset cancels an in-flight solve.
+- **Live mode**: toggle **Live** and the step list tracks your own moves — each correct move drops
+  off the top, a wrong move re-inserts its undo so the list stays valid instantly, and a debounced
+  background re-solve quietly restores the optimal sequence when you pause.
+- **Performance**: a multi-core IDA\* search solves most states in well under a second. The rarest
+  near-God's-number scrambles (distance ~18–20) are intrinsically expensive for a *guaranteed-optimal*
+  search and can take minutes. The solve runs off the render thread, so the window stays responsive,
+  and a Reset cancels an in-flight solve.
 
 ## HTTP API
 
