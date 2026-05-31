@@ -18,6 +18,20 @@ use crate::cube::{CoreChanged, Cube, MoveApplied, MoveQueue};
 /// Duration of a single layer turn, in seconds (~the spec's 0.25s).
 const MOVE_DURATION: f32 = 0.25;
 
+/// A 180° (double) turn sweeps twice the angle of a quarter turn; stretch its
+/// duration by this factor so it doesn't feel rushed — kept well under 2×, which
+/// would feel sluggish.
+const DOUBLE_TURN_SCALE: f32 = 1.4;
+
+/// Animation duration (seconds) for a turn: a double turn is `DOUBLE_TURN_SCALE`×
+/// the base; quarter turns (CW/CCW) use the base duration.
+fn move_duration(turn: Turn) -> f32 {
+    match turn {
+        Turn::Double => MOVE_DURATION * DOUBLE_TURN_SCALE,
+        _ => MOVE_DURATION,
+    }
+}
+
 /// The currently animating move, or `None` when idle.
 #[derive(Resource, Default)]
 pub struct ActiveMove(pub Option<MoveAnim>);
@@ -118,7 +132,7 @@ pub fn animate_move(
     };
 
     anim.elapsed += time.delta_secs();
-    let t = (anim.elapsed / MOVE_DURATION).clamp(0.0, 1.0);
+    let t = (anim.elapsed / move_duration(anim.mv.turn)).clamp(0.0, 1.0);
     let eased = smoothstep(t);
 
     let axis = anim.mv.axis().as_vec3(); // already unit length
@@ -159,5 +173,26 @@ pub fn apply_state(
         queue.0.clear();
         active.0 = None;
         core_changed.write(CoreChanged);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn double_turn_is_slower_but_under_double() {
+        let quarter = move_duration(Turn::Cw);
+        let double = move_duration(Turn::Double);
+        assert_eq!(quarter, MOVE_DURATION);
+        assert_eq!(move_duration(Turn::Ccw), MOVE_DURATION);
+        assert!(
+            double > quarter,
+            "double turn should take longer than a quarter"
+        );
+        assert!(
+            double < 2.0 * quarter,
+            "double turn should stay under 2× a quarter"
+        );
     }
 }
