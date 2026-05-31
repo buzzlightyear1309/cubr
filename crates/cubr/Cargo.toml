@@ -5,6 +5,9 @@ edition = "2021"
 description = "Interactive 3x3x3 Rubik's cube in Bevy, with a guaranteed-optimal solver and a local HTTP control API"
 license = "MIT"
 repository = "https://github.com/buzzlightyear1309/cubr"
+readme = "README.md"
+keywords = ["rubiks-cube", "cube", "bevy", "solver", "puzzle"]
+categories = ["games", "visualization"]
 
 [dependencies]
 cubr-core = { path = "../cubr-core", version = "0.1" }
