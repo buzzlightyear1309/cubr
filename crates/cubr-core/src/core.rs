@@ -1,5 +1,5 @@
-use crate::cube::model::{CubeState, Face, Move, StickerColor};
-use bevy::math::IVec3;
+use crate::model::{CubeState, Face, Move, StickerColor};
+use glam::IVec3;
 
 /// 26 cubies (the hidden core at (0,0,0) is omitted). Integer rotation math only.
 pub struct CubeCore {
@@ -229,7 +229,7 @@ fn world_pos_to_index(face: Face, pos: IVec3) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cube::model::StickerColor::{B, G, O, R, W, Y};
+    use crate::model::StickerColor::{B, G, O, R, W, Y};
 
     // Self-checks on the README mapping (asserted in the task brief).
     #[test]
@@ -340,11 +340,11 @@ mod tests {
             let mut core = CubeCore::solved();
             let cw = Move {
                 face,
-                turn: crate::cube::model::Turn::Cw,
+                turn: crate::model::Turn::Cw,
             };
             let ccw = Move {
                 face,
-                turn: crate::cube::model::Turn::Ccw,
+                turn: crate::model::Turn::Ccw,
             };
             core.apply(cw);
             core.apply(ccw);

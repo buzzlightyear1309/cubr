@@ -7,6 +7,20 @@ use crate::cube::core::CoreCubie;
 use crate::cube::model::StickerColor;
 use crate::cube::Cube;
 
+/// Render color (sRGB) for a sticker. White/Yellow/Red/Orange/Blue/Green tuned for
+/// a clean look. Lives in the binary because `Color` is a Bevy type — the pure
+/// `cubr_core::model::StickerColor` carries no rendering dependency.
+fn render_color(c: StickerColor) -> Color {
+    match c {
+        StickerColor::W => Color::srgb(0.95, 0.95, 0.95),
+        StickerColor::Y => Color::srgb(0.95, 0.80, 0.15),
+        StickerColor::R => Color::srgb(0.78, 0.10, 0.12),
+        StickerColor::O => Color::srgb(0.95, 0.45, 0.10),
+        StickerColor::B => Color::srgb(0.05, 0.30, 0.75),
+        StickerColor::G => Color::srgb(0.10, 0.60, 0.25),
+    }
+}
+
 /// World units between adjacent cubie centers. With spacing 1.0, a core `pos`
 /// component in {-1,0,1} maps straight to a world translation.
 const SPACING: f32 = 1.0;
@@ -63,7 +77,7 @@ impl FromWorld for CubeMaterials {
         let mut materials = world.resource_mut::<Assets<StandardMaterial>>();
         let colors = StickerColor::ALL.map(|c| {
             materials.add(StandardMaterial {
-                base_color: c.to_render_color(),
+                base_color: render_color(c),
                 perceptual_roughness: 0.6,
                 reflectance: 0.1,
                 ..default()

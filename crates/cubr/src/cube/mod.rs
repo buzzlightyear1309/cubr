@@ -4,9 +4,12 @@
 use bevy::prelude::*;
 
 pub mod animation;
-pub mod core;
-pub mod model;
 pub mod spawn;
+
+// Re-export the pure cube model from `cubr-core` under the same paths the binary
+// has always used (`crate::cube::core::*` / `crate::cube::model::*`), so the rest
+// of the app keeps resolving unchanged after the workspace split.
+pub use cubr_core::{core, model};
 
 use self::animation::{animate_move, apply_state, start_move, ActiveMove};
 use self::core::CubeCore;

@@ -6,7 +6,6 @@ mod camera;
 mod cube;
 mod geom;
 mod solve_ui;
-mod solver;
 mod swipe;
 mod ui;
 mod view_relative;

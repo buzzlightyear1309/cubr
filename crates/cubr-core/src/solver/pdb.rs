@@ -167,7 +167,7 @@ impl EdgeMoveTables {
 
 /// The three Korf pattern databases, nibble-packed (`0xF` sentinel removed after a
 /// complete build). `Vec<u8>` only, so `Pdbs` is trivially `Send + Sync`.
-pub(crate) struct Pdbs {
+pub struct Pdbs {
     pub corner: Vec<u8>,
     pub edge_a: Vec<u8>,
     pub edge_b: Vec<u8>,

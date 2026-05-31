@@ -1,4 +1,4 @@
-use bevy::prelude::*; // for IVec3, Color
+use glam::IVec3;
 use serde::{Deserialize, Serialize};
 
 /// Sticker color. Serializes to its single-letter name ("W","Y","R","O","B","G").
@@ -22,18 +22,6 @@ impl StickerColor {
         StickerColor::B,
         StickerColor::G,
     ];
-
-    /// Render color (sRGB). White/Yellow/Red/Orange/Blue/Green tuned for a clean look.
-    pub fn to_render_color(self) -> Color {
-        match self {
-            StickerColor::W => Color::srgb(0.95, 0.95, 0.95),
-            StickerColor::Y => Color::srgb(0.95, 0.80, 0.15),
-            StickerColor::R => Color::srgb(0.78, 0.10, 0.12),
-            StickerColor::O => Color::srgb(0.95, 0.45, 0.10),
-            StickerColor::B => Color::srgb(0.05, 0.30, 0.75),
-            StickerColor::G => Color::srgb(0.10, 0.60, 0.25),
-        }
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]

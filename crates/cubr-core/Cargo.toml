@@ -1,0 +1,15 @@
+[package]
+name = "cubr-core"
+version = "0.1.0"
+edition = "2021"
+description = "Pure, Bevy-free 3x3x3 Rubik's cube model (integer-math CubeCore) and a guaranteed-optimal Korf solver"
+license = "MIT"
+repository = "https://github.com/buzzlightyear1309/cubr"
+
+[dependencies]
+glam = "0.30"
+serde = { version = "1", features = ["derive"] }
+kewb = "0.4"
+
+[dev-dependencies]
+serde_json = "1"

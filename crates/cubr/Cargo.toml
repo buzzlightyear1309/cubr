@@ -1,0 +1,14 @@
+[package]
+name = "cubr"
+version = "0.1.0"
+edition = "2021"
+description = "Interactive 3x3x3 Rubik's cube in Bevy, with a guaranteed-optimal solver and a local HTTP control API"
+license = "MIT"
+repository = "https://github.com/buzzlightyear1309/cubr"
+
+[dependencies]
+cubr-core = { path = "../cubr-core", version = "0.1" }
+bevy = "0.18"
+tiny_http = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

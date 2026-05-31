@@ -13,8 +13,8 @@
 // face's outward normal that reads as Ccw on the +axis side and Cw on the
 // -axis side — see `swipe_to_move`.
 
-use bevy::prelude::*;
 use bevy::picking::events::{Cancel, DragEnd, Pointer, Press, Release};
+use bevy::prelude::*;
 
 use crate::cube::model::{Face, Move, Turn};
 use crate::cube::spawn::{Cubie, Sticker};
@@ -37,9 +37,9 @@ pub struct DragState {
 }
 
 struct CubeGrab {
-    face: Face,        // world face the sticker faces
-    cubie_pos: IVec3,  // grabbed cubie's current grid cell
-    hit_world: Vec3,   // world hit point (for screen projection)
+    face: Face,       // world face the sticker faces
+    cubie_pos: IVec3, // grabbed cubie's current grid cell
+    hit_world: Vec3,  // world hit point (for screen projection)
 }
 
 /// Minimum screen drag (pixels) to count as a swipe rather than a click.
@@ -160,7 +160,9 @@ fn dominant_inplane_axis(
     let mut best: Option<IVec3> = None;
     let mut best_dot = 0.0_f32;
     for axis in face_plane_axes(grab.face) {
-        let tip = cam.world_to_viewport(cam_xf, grab.hit_world + axis.as_vec3()).ok()?;
+        let tip = cam
+            .world_to_viewport(cam_xf, grab.hit_world + axis.as_vec3())
+            .ok()?;
         let d = screen.dot(tip - base);
         if d.abs() > best_dot.abs() {
             best_dot = d;

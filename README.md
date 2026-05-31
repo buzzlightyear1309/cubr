@@ -47,7 +47,7 @@ and set the cube.
 Prerequisites: a stable Rust toolchain ([rustup](https://rustup.rs/)).
 
 ```bash
-cargo run --release
+cargo run -p cubr --release
 ```
 
 This opens the cube window and starts the HTTP API on `localhost:3000`. On the **first launch** the
@@ -188,24 +188,35 @@ stickers.
   entities *mirror* it; between moves every transform sits exactly on the integer grid / 90° multiples.
 - **Moves** are applied as integer permutations of a layer; the animation system eases the visual
   toward the already-applied core pose, then snaps it back onto the grid.
-- **Solver** (`src/solver/`) is pure and standalone: `coords` (permutation/orientation ranking + the
-  move model), `pdb` + `cache` (the three pattern databases, nibble-packed, generated once and cached
-  to disk), and `search` (the IDA\* itself). The [`kewb`](https://crates.io/crates/kewb) crate is used
-  only as a vetted cube model for parsing/validating a facelet string; all the search math is local.
-- **API** (`src/api/`) runs `tiny_http` on a dedicated thread and forwards commands over an `mpsc`
-  channel into the Bevy world.
+- **Solver** (`crates/cubr-core/src/solver/`) is pure and standalone: `coords` (permutation/orientation
+  ranking + the move model), `pdb` + `cache` (the three pattern databases, nibble-packed, generated once
+  and cached to disk), and `search` (the IDA\* itself). The
+  [`kewb`](https://crates.io/crates/kewb) crate is used only as a vetted cube model for
+  parsing/validating a facelet string; all the search math is local.
+- **API** (`crates/cubr/src/api/`) runs `tiny_http` on a dedicated thread and forwards commands over an
+  `mpsc` channel into the Bevy world.
+
+The repo is a Cargo **workspace**: the pure, Bevy-free model + solver live in the `cubr-core` library,
+and the Bevy app (`cubr`) depends on it.
 
 ```
-src/
-├── main.rs          # App + plugin wiring
-├── cube/            # pure CubeCore engine, move model, spawning, animation
-├── camera.rs        # re-basing turntable orbit + zoom
-├── swipe.rs         # mesh-picking drag-to-turn
-├── ui.rs            # move-button panel + control-scheme toggle + Reset
-├── view_relative.rs # view-relative move naming (Beginner scheme)
-├── solver/          # Korf optimal solver: coords, pattern DBs + cache, IDA* search
-├── solve_ui.rs      # Solve/Run panel; off-thread table build + solve
-└── api/             # HTTP server + Bevy bridge
+crates/
+├── cubr-core/            # LIBRARY — pure, no Bevy
+│   └── src/
+│       ├── lib.rs        # pub mod core; pub mod model; pub mod solver;
+│       ├── core.rs       # integer-math CubeCore (the single source of truth)
+│       ├── model.rs      # StickerColor, Face, Move, CubeState (serde JSON shape)
+│       └── solver/       # Korf optimal solver: coords, pattern DBs + cache, IDA* search
+└── cubr/                 # BINARY — the Bevy app
+    └── src/
+        ├── main.rs          # App + plugin wiring
+        ├── cube/            # CubePlugin: spawning, animation; re-exports cubr_core::{core, model}
+        ├── camera.rs        # re-basing turntable orbit + zoom
+        ├── swipe.rs         # mesh-picking drag-to-turn
+        ├── ui.rs            # move-button panel + control-scheme toggle + Reset
+        ├── view_relative.rs # view-relative move naming (Beginner scheme)
+        ├── solve_ui.rs      # Solve/Run panel; off-thread table build + solve
+        └── api/             # HTTP server + Bevy bridge
 ```
 
 ## Testing

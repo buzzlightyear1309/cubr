@@ -1,7 +1,8 @@
 //! Guaranteed-optimal Korf IDA* solver.
 //!
-//! No Bevy types or systems live here — this mirrors `cube::core` in being a pure,
-//! fully unit-tested module. The Bevy layer (`solve_ui`) loads/generates the
+//! No Bevy types or systems live here — this mirrors [`crate::core`] in being a pure,
+//! fully unit-tested module. The Bevy layer (`solve_ui`, in the `cubr` binary)
+//! loads/generates the
 //! [`Pdbs`] off-thread and feeds states through [`solve`].
 //!
 //! ## The kewb boundary
@@ -21,7 +22,7 @@
 //! the face letter of the face whose solved center is that color
 //! (`W->U, R->R, G->F, Y->D, O->L, B->B`).
 
-use crate::cube::model::{CubeState, Face, Move, StickerColor};
+use crate::model::{CubeState, Face, Move, StickerColor};
 use std::sync::atomic::AtomicBool;
 
 mod cache;
@@ -29,11 +30,11 @@ mod coords;
 mod pdb;
 mod search;
 
-pub(crate) use pdb::Pdbs;
+pub use pdb::Pdbs;
 
 /// Error from solving.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum SolveError {
+pub enum SolveError {
     /// The state is physically impossible / unparseable (wrong color counts, bad
     /// permutation/orientation parity, etc.).
     Unsolvable,
@@ -43,7 +44,7 @@ pub(crate) enum SolveError {
 
 /// Load the cached Korf PDBs, or generate them (SLOW, ~30–60 s on first run) and cache
 /// them to disk. Pure (no Bevy); the caller runs this once, off-thread.
-pub(crate) fn build_or_load_pdbs() -> Pdbs {
+pub fn build_or_load_pdbs() -> Pdbs {
     let path = cache::cache_path();
     if let Some(p) = cache::load(&path) {
         return p;
@@ -57,11 +58,7 @@ pub(crate) fn build_or_load_pdbs() -> Pdbs {
 /// [`SolveError::Unsolvable`]), converts it to our coordinate arrays, then runs the
 /// guaranteed-optimal IDA* search. `cancel` aborts the search
 /// (-> [`SolveError::Cancelled`]). An already-solved state returns `Ok(vec![])`.
-pub(crate) fn solve(
-    pdbs: &Pdbs,
-    state: &CubeState,
-    cancel: &AtomicBool,
-) -> Result<Vec<Move>, SolveError> {
+pub fn solve(pdbs: &Pdbs, state: &CubeState, cancel: &AtomicBool) -> Result<Vec<Move>, SolveError> {
     let facelets = state_to_facelets(state);
     let face = kewb::FaceCube::try_from(facelets.as_str()).map_err(|_| SolveError::Unsolvable)?;
     let cubie = kewb::CubieCube::try_from(&face).map_err(|_| SolveError::Unsolvable)?;
@@ -121,7 +118,7 @@ fn state_to_facelets(state: &CubeState) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cube::core::CubeCore;
+    use crate::core::CubeCore;
     use coords::{apply, move_to_index, Cubies, SOLVED};
     use std::sync::atomic::AtomicBool;
 

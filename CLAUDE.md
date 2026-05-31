@@ -48,16 +48,21 @@ For each unit of work:
 
 ## Commands
 ```bash
-cargo run                     # opens the cube window + starts the API on localhost:3000
-cargo test                    # pure cube-core correctness (no rendering needed)
-cargo clippy -- -D warnings   # lint gate — keep it clean
+cargo run -p cubr             # opens the cube window + starts the API on localhost:3000
+cargo test                    # pure cube-core correctness (no rendering); covers BOTH crates
+cargo clippy --workspace -- -D warnings   # lint gate — keep it clean
 cargo fmt                     # format (defaults)
 # quick API smoke test (app running):
 curl -XPOST localhost:3000/move  -H 'Content-Type: application/json' -d '{"move":"R"}'
 curl -XPOST localhost:3000/state -H 'Content-Type: application/json' -d @state.json
 ```
-First cold build of Bevy is ~2–3 min; the cache is warm after that. `cargo run` is a GUI app — when
-verifying it from an agent, launch in the background, screenshot with `screencapture -x`, then kill.
+The repo is a Cargo **workspace** (virtual manifest at the root; members `crates/cubr-core` and
+`crates/cubr`, no `default-members`). `cargo run` needs `-p cubr` to pick the binary; `cargo build`
+/ `cargo clippy` take `--workspace`; a bare `cargo test` covers both crates' tests.
+
+First cold build of Bevy is ~2–3 min; the cache is warm after that. `cargo run -p cubr` is a GUI app
+— when verifying it from an agent, launch in the background, screenshot with `screencapture -x`, then
+kill.
 
 ## Working efficiently in this repo (avoid permission stalls)
 - **Read files with the `Read`/`Grep`/`Glob` tools — not Bash.** Don't shell out to `cat`, `head`,
@@ -72,22 +77,30 @@ verifying it from an agent, launch in the background, screenshot with `screencap
   it every session.
 
 ## Architecture
+Virtual Cargo workspace: `cubr-core` (pure library, no Bevy) + `cubr` (the Bevy binary, depends on it).
 ```
-src/
-├── main.rs        # App + plugin wiring: CubePlugin, CameraPlugin, UiPlugin, ApiPlugin, MeshPickingPlugin, SwipePlugin, SolverPlugin
-├── cube/
-│   ├── core.rs    # PURE integer-math cube (source of truth) — no Bevy, fully unit-tested
-│   ├── model.rs   # StickerColor, Face, Move (parse/notation), CubeState (serde JSON shape)
-│   ├── spawn.rs   # 26 cubie entities + sticker children; sync visuals <- core
-│   └── animation.rs # MoveQueue consumer; ~0.25s smoothstep layer turns, one at a time
-├── camera.rs      # re-basing turntable orbit (pole follows the tumble, smooth re-level, `L` levels) + wheel zoom; OrbitCamera::basis()
-├── geom.rs        # small shared geometry helper (best_by_dot: nearest direction by dot product)
-├── view_relative.rs # pure view-relative mapping: RelFace + relative_move(basis) -> Move, describe (inverse) + rel_label (Beginner wording)
-├── swipe.rs       # mesh-picking swipe/flick — drag a visible layer to turn it -> MoveQueue
-├── ui.rs          # native bevy_ui: Standard/Beginner scheme toggle, move grids + Reset -> MoveQueue
-├── solver/      # guaranteed-optimal Korf solver: coords + ranking (coords.rs), corner+2 edge PDBs + cache (pdb.rs/cache.rs), IDA* (search.rs); CubeState -> optimal Vec<Move> (kewb kept only for facelet parse/validate)
-├── solve_ui.rs    # SolverPlugin: right Solve/Run panel; off-thread PDB build + off-thread solve; scheme-aware step list -> MoveQueue
-└── api/           # tiny_http on its own thread + mpsc channel -> Bevy (non-blocking)
+Cargo.toml         # [workspace]: members crates/cubr-core, crates/cubr; profiles live HERE (root-only)
+crates/
+├── cubr-core/     # LIBRARY — pure, no Bevy (glam, serde, kewb)
+│   └── src/
+│       ├── lib.rs   # pub mod core; pub mod model; pub mod solver;
+│       ├── core.rs  # PURE integer-math cube (source of truth) — no Bevy, fully unit-tested (uses glam::IVec3)
+│       ├── model.rs # StickerColor, Face, Move (parse/notation), CubeState (serde JSON shape) — no to_render_color
+│       └── solver/  # guaranteed-optimal Korf solver: coords + ranking (coords.rs), corner+2 edge PDBs + cache (pdb.rs/cache.rs), IDA* (search.rs); CubeState -> optimal Vec<Move> (kewb kept only for facelet parse/validate). Public: solve, build_or_load_pdbs, Pdbs, SolveError
+└── cubr/          # BINARY — the Bevy app
+    └── src/
+        ├── main.rs        # App + plugin wiring: CubePlugin, CameraPlugin, UiPlugin, ApiPlugin, MeshPickingPlugin, SwipePlugin, SolverPlugin
+        ├── cube/
+        │   ├── mod.rs     # CubePlugin + resources/messages; `pub use cubr_core::{core, model};` keeps crate::cube::{core,model}::* paths working
+        │   ├── spawn.rs   # 26 cubie entities + sticker children; sync visuals <- core; render_color() free fn (StickerColor -> Bevy Color)
+        │   └── animation.rs # MoveQueue consumer; ~0.25s smoothstep layer turns, one at a time
+        ├── camera.rs      # re-basing turntable orbit (pole follows the tumble, smooth re-level, `L` levels) + wheel zoom; OrbitCamera::basis()
+        ├── geom.rs        # small shared geometry helper (best_by_dot: nearest direction by dot product)
+        ├── view_relative.rs # pure view-relative mapping: RelFace + relative_move(basis) -> Move, describe (inverse) + rel_label (Beginner wording)
+        ├── swipe.rs       # mesh-picking swipe/flick — drag a visible layer to turn it -> MoveQueue
+        ├── ui.rs          # native bevy_ui: Standard/Beginner scheme toggle, move grids + Reset -> MoveQueue
+        ├── solve_ui.rs    # SolverPlugin: right Solve/Run panel; off-thread PDB build + off-thread solve (uses cubr_core::solver); scheme-aware step list -> MoveQueue
+        └── api/           # tiny_http on its own thread + mpsc channel -> Bevy (non-blocking)
 ```
 **Key invariant:** the pure `CubeCore` is the single source of truth (geometry *and* color); Bevy
 entities mirror it. When no move is animating, transforms sit exactly on the integer grid / 90°

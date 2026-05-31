@@ -22,7 +22,7 @@
 //! (the cube on the *left*). Our [`apply`] reproduces that order; the `compose_matches_kewb`
 //! test is the guard.
 
-use crate::cube::model::{Face, Move, Turn};
+use crate::model::{Face, Move, Turn};
 
 /// Cube state on flat `u8` arrays (kewb's cubie convention; see module docs).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

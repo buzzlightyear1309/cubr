@@ -132,20 +132,20 @@ fn dfs(
     Dfs::Min(min)
 }
 
-/// Optimal solution as our [`Move`](crate::cube::model::Move)s, or `None` if cancelled.
+/// Optimal solution as our [`Move`](crate::model::Move)s, or `None` if cancelled.
 pub(crate) fn search(
     pdbs: &Pdbs,
     start: &Cubies,
     cancel: &AtomicBool,
-) -> Option<Vec<crate::cube::model::Move>> {
+) -> Option<Vec<crate::model::Move>> {
     ida_star(start, |c| pdbs.h(c), cancel).map(|idxs| idxs.into_iter().map(index_to_move).collect())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cube::core::CubeCore;
-    use crate::cube::model::{CubeState, Move};
+    use crate::core::CubeCore;
+    use crate::model::{CubeState, Move};
     use std::collections::HashMap;
 
     /// A fresh, never-set cancel flag.

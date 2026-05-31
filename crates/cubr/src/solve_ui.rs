@@ -1,5 +1,5 @@
 //! Right-docked "Solution" panel: a **Solve** button computes a solution for the
-//! current cube via the pure [`crate::solver`] adapter and lists the moves; a
+//! current cube via the pure [`cubr_core::solver`] adapter and lists the moves; a
 //! **Run** button animates that solution by enqueuing the moves onto the shared
 //! [`MoveQueue`] (the existing animator drains it — no new animation code here).
 //!
@@ -23,12 +23,12 @@ use std::sync::Arc;
 
 use bevy::prelude::*;
 use bevy::tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task};
+use cubr_core::solver;
 
 use crate::camera::OrbitCamera;
 use crate::cube::animation::ActiveMove;
 use crate::cube::model::Move;
 use crate::cube::{ApplyState, Cube, MoveQueue};
-use crate::solver;
 use crate::ui::{
     set_button_color, spawn_labeled_button, ControlScheme, BTN_PRESSED, LABEL_COLOR, PANEL_BG,
 };

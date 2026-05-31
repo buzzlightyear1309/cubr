@@ -1,19 +1,12 @@
-[package]
-name = "cubr"
-version = "0.1.0"
-edition = "2021"
-description = "Interactive 3x3x3 Rubik's cube in Bevy, with a guaranteed-optimal solver and a local HTTP control API"
-license = "MIT"
-repository = "https://github.com/buzzlightyear1309/cubr"
+[workspace]
+resolver = "2"
+members = ["crates/cubr-core", "crates/cubr"]
+# No default-members: a bare `cargo test` covers BOTH crates (we want
+# cubr-core's pure tests to run by default). `cargo run` is disambiguated
+# with `-p cubr` (the virtual workspace has no root package).
 
-[dependencies]
-bevy = "0.18"
-tiny_http = "0.12"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-kewb = "0.4"
-
-# Faster incremental builds during development.
+# Profiles only take effect at the workspace root, so the dev opt-level
+# tuning for faster incremental Bevy builds lives here.
 [profile.dev]
 opt-level = 1
 

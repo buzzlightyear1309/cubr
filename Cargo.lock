@@ -2185,10 +2185,20 @@ name = "cubr"
 version = "0.1.0"
 dependencies = [
  "bevy",
- "kewb",
+ "cubr-core",
  "serde",
  "serde_json",
  "tiny_http",
+]
+
+[[package]]
+name = "cubr-core"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "kewb",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
