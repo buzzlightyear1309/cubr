@@ -203,6 +203,21 @@ impl Move {
             Turn::Double => 2,
         }
     }
+
+    /// The move that undoes this one: same face, opposite quarter-turn direction
+    /// (Cw↔Ccw); a double turn is its own inverse. So `m` followed by `m.inverse()`
+    /// is the identity on the cube.
+    pub fn inverse(self) -> Move {
+        let turn = match self.turn {
+            Turn::Cw => Turn::Ccw,
+            Turn::Ccw => Turn::Cw,
+            Turn::Double => Turn::Double,
+        };
+        Move {
+            face: self.face,
+            turn,
+        }
+    }
 }
 
 /// The exact JSON shape of POST /state (see README "Cube-state JSON contract").
@@ -312,6 +327,26 @@ mod tests {
             .quarter_turns_cw(),
             2
         );
+    }
+
+    #[test]
+    fn inverse_undoes_each_move() {
+        for &m in &Move::ALL {
+            // Cw↔Ccw, Double→Double; the face never changes.
+            assert_eq!(m.inverse().face, m.face);
+            match m.turn {
+                Turn::Cw => assert_eq!(m.inverse().turn, Turn::Ccw),
+                Turn::Ccw => assert_eq!(m.inverse().turn, Turn::Cw),
+                Turn::Double => assert_eq!(m.inverse().turn, Turn::Double),
+            }
+            // Inverting twice is the identity.
+            assert_eq!(m.inverse().inverse(), m);
+            // The two quarter-turn counts sum to a full (no-op) rotation.
+            assert_eq!(
+                (m.quarter_turns_cw() + m.inverse().quarter_turns_cw()) % 4,
+                0
+            );
+        }
     }
 
     // Test 7 (part 1): parse/notation round-trip over all 18; parse rejects junk;

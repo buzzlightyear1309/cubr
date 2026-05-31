@@ -13,7 +13,7 @@ use bevy::prelude::*;
 
 use crate::cube::model::{Move, Turn};
 use crate::cube::ApplyState;
-use crate::cube::{CoreChanged, Cube, MoveQueue};
+use crate::cube::{CoreChanged, Cube, MoveApplied, MoveQueue};
 
 /// Duration of a single layer turn, in seconds (~the spec's 0.25s).
 const MOVE_DURATION: f32 = 0.25;
@@ -61,6 +61,7 @@ pub fn start_move(
     mut queue: ResMut<MoveQueue>,
     mut cube: ResMut<Cube>,
     cubies: Query<(Entity, &super::spawn::Cubie, &Transform)>,
+    mut move_applied: MessageWriter<MoveApplied>,
 ) {
     if active.0.is_some() {
         return; // a move is already animating
@@ -90,6 +91,10 @@ pub fn start_move(
     // would snap the visuals instantly; instead we animate toward this pose and
     // fire CoreChanged on completion.
     cube.0.apply(m);
+    // Announce the applied move at this single choke-point so the live-sort step
+    // list can track every move (any source) without polling the queue. Does not
+    // affect the animation in any way.
+    move_applied.write(MoveApplied(m));
 
     active.0 = Some(MoveAnim {
         mv: m,

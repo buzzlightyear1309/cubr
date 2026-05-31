@@ -36,6 +36,13 @@ pub struct ApplyState(pub CubeState);
 #[derive(Message)]
 pub struct CoreChanged;
 
+/// One move was just applied to the core (from any source — swipe / UI / API /
+/// Run). Emitted by `animation::start_move` at the single choke-point where every
+/// move is applied, so the live-sort step list can track moves without polling the
+/// queue. Buffered message; read with `MessageReader<MoveApplied>`.
+#[derive(Message)]
+pub struct MoveApplied(pub Move);
+
 /// Owns the cube resources/events + spawn + the sync system. (Animation is
 /// wired by Phase 4; the orbit camera + ambient fill by Phase 3's CameraPlugin.)
 pub struct CubePlugin;
@@ -52,6 +59,7 @@ impl Plugin for CubePlugin {
             // Buffered messages in 0.18 are registered with `add_message`.
             .add_message::<CoreChanged>()
             .add_message::<ApplyState>()
+            .add_message::<MoveApplied>()
             // Startup order: materials already exist (resource above), the cube
             // exists, so spawn then do one sync to land on the integer grid.
             .add_systems(Startup, spawn_lighting)
