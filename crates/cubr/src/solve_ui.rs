@@ -34,15 +34,16 @@ use crate::ui::{
 };
 use crate::view_relative::{describe, rel_label};
 
-/// The Korf pattern databases, once the background load/generate completes (`None`
-/// while loading). `Arc`-wrapped so the off-thread solve closure can hold a clone
-/// without borrowing any Bevy state.
+/// The ready [`solver::Solver`] (PDBs + prebuilt in-memory search tables), once the
+/// background load/build completes (`None` while loading). `Arc`-wrapped so each
+/// off-thread solve closure can hold a clone without borrowing any Bevy state, and so the
+/// ~62 MB search tables are built once and shared by every solve.
 #[derive(Resource, Default)]
-struct SolverPdbs(Option<Arc<solver::Pdbs>>);
+struct SolverReady(Option<Arc<solver::Solver>>);
 
-/// The in-flight startup PDB load/generate. Removed once polled to completion.
+/// The in-flight startup PDB load/build. Removed once polled to completion.
 #[derive(Resource)]
-struct PdbBuildTask(Task<Arc<solver::Pdbs>>);
+struct PdbBuildTask(Task<Arc<solver::Solver>>);
 
 /// An in-flight off-thread solve. Present only while a solve is running; its `cancel`
 /// flag is set (and the resource dropped) when a repaint supersedes it.
@@ -161,7 +162,7 @@ pub struct SolverPlugin;
 
 impl Plugin for SolverPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<SolverPdbs>()
+        app.init_resource::<SolverReady>()
             .init_resource::<Solution>()
             .add_systems(Startup, (start_table_build, spawn_steps_panel))
             .add_systems(
@@ -183,28 +184,30 @@ impl Plugin for SolverPlugin {
 
 // --- Background PDB build ------------------------------------------------------
 
-/// Kick off the (slow) Korf PDB load-or-generate off-thread on the async compute
-/// pool, so the window opens immediately. `Solution` defaults to `Loading`.
+/// Kick off the (slow) Korf PDB load-or-generate plus the in-memory search-table build
+/// off-thread on the async compute pool, so the window opens immediately. `Solution`
+/// defaults to `Loading`. The tables are built once here (inside [`solver::Solver::new`])
+/// and reused by every solve.
 fn start_table_build(mut commands: Commands) {
-    let task =
-        AsyncComputeTaskPool::get().spawn(async move { Arc::new(solver::build_or_load_pdbs()) });
+    let task = AsyncComputeTaskPool::get()
+        .spawn(async move { Arc::new(solver::Solver::new(solver::build_or_load_pdbs())) });
     commands.insert_resource(PdbBuildTask(task));
 }
 
-/// Poll the in-flight build once per frame; when it completes, move the PDBs
-/// into `SolverPdbs`, drop the task resource, and flip a still-`Loading` status
-/// to `Idle` (a solve/repaint that happened meanwhile is left untouched).
+/// Poll the in-flight build once per frame; when it completes, move the [`solver::Solver`]
+/// into `SolverReady`, drop the task resource, and flip a still-`Loading` status to `Idle`
+/// (a solve/repaint that happened meanwhile is left untouched).
 fn poll_table_build(
     mut commands: Commands,
     task: Option<ResMut<PdbBuildTask>>,
-    mut pdbs: ResMut<SolverPdbs>,
+    mut ready: ResMut<SolverReady>,
     mut solution: ResMut<Solution>,
 ) {
     let Some(mut task) = task else {
         return;
     };
     if let Some(built) = block_on(future::poll_once(&mut task.0)) {
-        pdbs.0 = Some(built);
+        ready.0 = Some(built);
         commands.remove_resource::<PdbBuildTask>();
         if solution.status == SolveStatus::Loading {
             solution.status = SolveStatus::Idle;
@@ -228,7 +231,7 @@ fn handle_solve_button(
         (&Interaction, &mut BackgroundColor),
         (Changed<Interaction>, With<SolveButton>),
     >,
-    pdbs: Res<SolverPdbs>,
+    ready: Res<SolverReady>,
     solve_task: Option<Res<SolveTask>>,
     cube: Res<Cube>,
     mut solution: ResMut<Solution>,
@@ -238,14 +241,14 @@ fn handle_solve_button(
             if solve_task.is_some() {
                 // A solve is already running; ignore the press.
             } else {
-                match pdbs.0.as_ref() {
-                    Some(pdbs) => {
-                        let pdbs = Arc::clone(pdbs);
+                match ready.0.as_ref() {
+                    Some(solver) => {
+                        let solver = Arc::clone(solver);
                         let state = cube.0.to_state();
                         let cancel = Arc::new(AtomicBool::new(false));
                         let cancel_clone = Arc::clone(&cancel);
                         let task = AsyncComputeTaskPool::get()
-                            .spawn(async move { solver::solve(&pdbs, &state, &cancel_clone) });
+                            .spawn(async move { solver.solve(&state, &cancel_clone) });
                         commands.insert_resource(SolveTask { task, cancel });
                         // A new solve supersedes any old run highlight.
                         solution.status = SolveStatus::Solving;

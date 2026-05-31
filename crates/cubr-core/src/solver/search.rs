@@ -8,8 +8,9 @@
 //! the answer.
 
 use super::coords::{apply, index_to_move, Cubies, SOLVED};
-use super::pdb::Pdbs;
-use std::sync::atomic::{AtomicBool, Ordering};
+use super::pdb::{corner_index, edge_index_a, edge_index_b, Pdbs, SearchTables};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::Mutex;
 
 /// How often (in expanded nodes) the DFS polls the cancel flag.
 const CANCEL_CHECK_INTERVAL: u64 = 8192;
@@ -54,6 +55,12 @@ enum Dfs {
 /// `cancel` was set (a validated, solvable cube always yields `Some`).
 ///
 /// Optimality holds for any admissible `h`, including `|_| 0`; `h` only affects speed.
+///
+/// This is the **reference oracle**: the production path is the faster coordinate-space
+/// search below, but this `Cubies`-driven IDA* (especially with the zero heuristic) is
+/// the trusted optimal-distance baseline the cross-check tests compare against, so it is
+/// kept verbatim. It is only reachable from tests now.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn ida_star(
     start: &Cubies,
     h: impl Fn(&Cubies) -> u8,
@@ -90,6 +97,7 @@ pub(crate) fn ida_star(
 /// Bounded DFS. `g` is the cost so far, `threshold` the current f-bound, `prev_move` the
 /// previous move index (for redundancy pruning). `path` holds the move indices from the
 /// root to the current node; it is restored on return. Returns the search outcome.
+#[cfg_attr(not(test), allow(dead_code))]
 #[allow(clippy::too_many_arguments)]
 fn dfs(
     node: &Cubies,
@@ -132,13 +140,314 @@ fn dfs(
     Dfs::Min(min)
 }
 
-/// Optimal solution as our [`Move`](crate::model::Move)s, or `None` if cancelled.
+// ---------------------------------------------------------------------------
+// Fast production search: incremental coordinates + dense tables + multicore.
+// ---------------------------------------------------------------------------
+//
+// The reference `ida_star` above re-derives all three PDB indices from the full
+// `Cubies` at every node (and is kept verbatim as the optimality oracle). The
+// production path below instead carries the *triple* `(corner_index, edge_index_a,
+// edge_index_b)` — a complete, injective encoding of the cube — and advances it with
+// `SearchTables` table lookups, so the hot loop never touches a `Cubies` or re-ranks.
+// It also fans the legal root moves across threads. Both paths are optimal (admissible
+// `max`-of-three heuristic + IDA*); this one is just dramatically faster on deep solves.
+
+/// The search coordinate: a complete encoding of the cube as its three PDB indices.
+/// `(0, 0, edge_index_b(&SOLVED))` is solved.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Coord {
+    ci: u32,
+    ai: u32,
+    bi: u32,
+}
+
+impl Coord {
+    /// The coordinate of `c`.
+    fn of(c: &Cubies) -> Coord {
+        Coord {
+            ci: corner_index(c),
+            ai: edge_index_a(c),
+            bi: edge_index_b(c),
+        }
+    }
+
+    /// The successor under move `mv`, via the dense transition tables (no `Cubies`).
+    #[inline]
+    fn neighbor(&self, tables: &SearchTables, mv: usize) -> Coord {
+        Coord {
+            ci: tables.corner_neighbor(self.ci, mv),
+            ai: tables.edge_neighbor(self.ai, mv),
+            bi: tables.edge_neighbor(self.bi, mv),
+        }
+    }
+}
+
+/// Bounded coordinate-space DFS, shared by the single- and multi-threaded drivers.
+/// Identical control flow to [`dfs`] but operating on [`Coord`] with the dense-table
+/// heuristic and transitions. `path` is the move-index stack from the search root.
+#[allow(clippy::too_many_arguments)]
+fn dfs_coord(
+    node: Coord,
+    solved: Coord,
+    g: u8,
+    threshold: u8,
+    prev_move: Option<usize>,
+    pdbs: &Pdbs,
+    tables: &SearchTables,
+    cancel: &AtomicBool,
+    path: &mut Vec<usize>,
+    nodes: &mut u64,
+) -> Dfs {
+    let f = g.saturating_add(pdbs.h_index(node.ci, node.ai, node.bi));
+    if f > threshold {
+        return Dfs::Min(f);
+    }
+    if node == solved {
+        return Dfs::Found(path.clone());
+    }
+
+    *nodes += 1;
+    if nodes.is_multiple_of(CANCEL_CHECK_INTERVAL) && cancel.load(Ordering::Relaxed) {
+        return Dfs::Cancelled;
+    }
+
+    let mut min = INF;
+    for mv in 0..18usize {
+        if redundant(prev_move, mv) {
+            continue;
+        }
+        let child = node.neighbor(tables, mv);
+        path.push(mv);
+        let outcome = dfs_coord(
+            child,
+            solved,
+            g + 1,
+            threshold,
+            Some(mv),
+            pdbs,
+            tables,
+            cancel,
+            path,
+            nodes,
+        );
+        path.pop();
+        match outcome {
+            Dfs::Found(p) => return Dfs::Found(p),
+            Dfs::Cancelled => return Dfs::Cancelled,
+            Dfs::Min(m) => min = min.min(m),
+        }
+    }
+    Dfs::Min(min)
+}
+
+/// Single-threaded coordinate IDA* (fallback when there is no usable parallelism or only
+/// one legal root move). Returns the optimal move-index path, or `None` if cancelled.
+fn ida_coord_single(
+    start: Coord,
+    solved: Coord,
+    pdbs: &Pdbs,
+    tables: &SearchTables,
+    cancel: &AtomicBool,
+) -> Option<Vec<usize>> {
+    if start == solved {
+        return Some(Vec::new());
+    }
+    let mut threshold = pdbs.h_index(start.ci, start.ai, start.bi);
+    let mut path: Vec<usize> = Vec::new();
+    let mut nodes: u64 = 0;
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return None;
+        }
+        match dfs_coord(
+            start, solved, 0, threshold, None, pdbs, tables, cancel, &mut path, &mut nodes,
+        ) {
+            Dfs::Found(p) => return Some(p),
+            Dfs::Cancelled => return None,
+            Dfs::Min(next) => {
+                if next == INF || next <= threshold {
+                    return None;
+                }
+                threshold = next;
+            }
+        }
+    }
+}
+
+/// Per-threshold result of probing a single root-move subset.
+enum RootProbe {
+    /// A solution was found at the current threshold (carries the full move-index path).
+    Found(Vec<usize>),
+    /// Exhausted the threshold with no solution. The next-threshold candidate has already
+    /// been folded into the shared `best_next` atomic, so it is not carried here.
+    Min,
+    /// Aborted (the shared `found`/`cancel` flag was observed set).
+    Stopped,
+}
+
+/// Probe one root-move subset for `threshold`: expand each assigned root move and DFS
+/// below it. Bails early if another thread already found a solution (`found`) or the
+/// caller cancelled. Reduces the next-threshold candidate into `best_next` (atomic min).
+#[allow(clippy::too_many_arguments)]
+fn probe_roots(
+    roots: &[usize],
+    start: Coord,
+    solved: Coord,
+    threshold: u8,
+    pdbs: &Pdbs,
+    tables: &SearchTables,
+    found: &AtomicBool,
+    best_next: &AtomicU8,
+    cancel: &AtomicBool,
+) -> RootProbe {
+    // Root node: f = h(start) (g = 0). If it already exceeds the threshold, this subset
+    // contributes that f as its next-threshold candidate and nothing else.
+    let hstart = pdbs.h_index(start.ci, start.ai, start.bi);
+    if hstart > threshold {
+        best_next.fetch_min(hstart, Ordering::Relaxed);
+        return RootProbe::Min;
+    }
+
+    let mut min = INF;
+    let mut nodes: u64 = 0;
+    let mut path: Vec<usize> = Vec::with_capacity(threshold as usize + 1);
+    for &mv in roots {
+        if found.load(Ordering::Relaxed) || cancel.load(Ordering::Relaxed) {
+            return RootProbe::Stopped;
+        }
+        let child = start.neighbor(tables, mv);
+        path.clear();
+        path.push(mv);
+        match dfs_coord(
+            child,
+            solved,
+            1,
+            threshold,
+            Some(mv),
+            pdbs,
+            tables,
+            cancel,
+            &mut path,
+            &mut nodes,
+        ) {
+            Dfs::Found(p) => return RootProbe::Found(p),
+            Dfs::Cancelled => return RootProbe::Stopped,
+            Dfs::Min(m) => min = min.min(m),
+        }
+    }
+    // Fold this subset's next-threshold candidate into the shared min.
+    if min != INF {
+        best_next.fetch_min(min, Ordering::Relaxed);
+    }
+    RootProbe::Min
+}
+
+/// Multi-threaded coordinate IDA*. The legal root moves are partitioned into disjoint
+/// subsets, one per thread; each thread DFS-searches its subset for the *current*
+/// threshold. The threshold rises only when **all** threads exhaust it without a
+/// solution, so the first threshold at which any thread reports a solution is the
+/// optimum — returning any path found at that threshold is optimal.
+fn ida_coord_parallel(
+    start: Coord,
+    solved: Coord,
+    roots: &[usize],
+    threads: usize,
+    pdbs: &Pdbs,
+    tables: &SearchTables,
+    cancel: &AtomicBool,
+) -> Option<Vec<usize>> {
+    // Round-robin the root moves into `threads` disjoint chunks (balances the heavy
+    // first roots across workers better than contiguous slicing).
+    let mut buckets: Vec<Vec<usize>> = vec![Vec::new(); threads];
+    for (i, &mv) in roots.iter().enumerate() {
+        buckets[i % threads].push(mv);
+    }
+    buckets.retain(|b| !b.is_empty());
+
+    let mut threshold = pdbs.h_index(start.ci, start.ai, start.bi);
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return None;
+        }
+
+        let found = AtomicBool::new(false);
+        let best_next = AtomicU8::new(INF);
+        let solution: Mutex<Option<Vec<usize>>> = Mutex::new(None);
+
+        std::thread::scope(|s| {
+            let handles: Vec<_> = buckets
+                .iter()
+                .map(|bucket| {
+                    let found = &found;
+                    let best_next = &best_next;
+                    let solution = &solution;
+                    s.spawn(move || {
+                        match probe_roots(
+                            bucket, start, solved, threshold, pdbs, tables, found, best_next,
+                            cancel,
+                        ) {
+                            RootProbe::Found(p) => {
+                                // First writer wins; any solution at this threshold is
+                                // optimal, so we don't compare lengths.
+                                if !found.swap(true, Ordering::Relaxed) {
+                                    *solution.lock().unwrap() = Some(p);
+                                }
+                            }
+                            RootProbe::Min | RootProbe::Stopped => {}
+                        }
+                    })
+                })
+                .collect();
+            for h in handles {
+                let _ = h.join();
+            }
+        });
+
+        if let Some(p) = solution.into_inner().unwrap() {
+            return Some(p);
+        }
+        if cancel.load(Ordering::Relaxed) {
+            return None;
+        }
+        let next = best_next.load(Ordering::Relaxed);
+        if next == INF || next <= threshold {
+            // No child exceeded the threshold anywhere: the space is exhausted with no
+            // solution (cannot happen for a validated solvable cube, but guard anyway).
+            return None;
+        }
+        threshold = next;
+    }
+}
+
+/// The single internal entry point both public surfaces delegate to (DRY). Runs the fast
+/// coordinate-space IDA* — multicore when there is real parallelism and more than one
+/// legal root move, single-threaded otherwise — and maps the move indices to
+/// [`Move`](crate::model::Move)s. Returns `None` if `cancel` was observed set.
 pub(crate) fn search(
     pdbs: &Pdbs,
+    tables: &SearchTables,
     start: &Cubies,
     cancel: &AtomicBool,
 ) -> Option<Vec<crate::model::Move>> {
-    ida_star(start, |c| pdbs.h(c), cancel).map(|idxs| idxs.into_iter().map(index_to_move).collect())
+    let start_coord = Coord::of(start);
+    let solved = Coord::of(&SOLVED);
+    if start_coord == solved {
+        return Some(Vec::new());
+    }
+
+    // Legal root moves under the redundancy pruning (root forbids nothing, so all 18).
+    let roots: Vec<usize> = (0..18usize).filter(|&mv| !redundant(None, mv)).collect();
+    let parallelism = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    let threads = parallelism.min(roots.len());
+
+    let idxs = if threads <= 1 || roots.len() <= 1 {
+        ida_coord_single(start_coord, solved, pdbs, tables, cancel)
+    } else {
+        ida_coord_parallel(start_coord, solved, &roots, threads, pdbs, tables, cancel)
+    };
+    idxs.map(|idxs| idxs.into_iter().map(index_to_move).collect())
 }
 
 #[cfg(test)]
@@ -358,6 +667,7 @@ mod tests {
     #[ignore = "builds the full ~85 MB PDBs and runs deep optimal solves (slow; run in release)"]
     fn full_pdb_optimality() {
         let pdbs = Pdbs::generate();
+        let tables = SearchTables::build();
 
         // The user's reported case: an 8-quarter-turn scramble (no doubles) must solve
         // in <= 8 moves and the solution must actually solve it.
@@ -370,7 +680,7 @@ mod tests {
             core.apply(m);
         }
         let cancel = never();
-        let sol = search(&pdbs, &cubies, &cancel).expect("solvable");
+        let sol = search(&pdbs, &tables, &cubies, &cancel).expect("solvable");
         assert!(
             sol.len() <= 8,
             "8-quarter-turn scramble solved in {} moves (> 8)",
@@ -397,7 +707,7 @@ mod tests {
                 core.apply(Move::ALL[idx]);
             }
             let cancel = never();
-            let sol = search(&pdbs, &cubies, &cancel).expect("solvable");
+            let sol = search(&pdbs, &tables, &cubies, &cancel).expect("solvable");
             assert!(
                 sol.len() <= 20,
                 "random scramble solved in {} (> 20)",
@@ -420,16 +730,21 @@ mod tests {
     #[ignore = "builds the full PDBs; compares PDB-guided vs zero-heuristic optimum on shallow states"]
     fn full_pdb_matches_zero_heuristic_on_shallow_states() {
         let pdbs = Pdbs::generate();
+        let tables = SearchTables::build();
         let mut seed = 0xFACE_0F01u32;
         for _ in 0..30 {
-            let len = 1 + (lcg(&mut seed) as usize % 7); // shallow: 1..=7
+            // Shallow enough that the zero-heuristic IDDFS oracle stays quick, but a touch
+            // deeper than before so the cross-check spans more of the tree.
+            let len = 1 + (lcg(&mut seed) as usize % 9); // shallow: 1..=9
             let mut cubies = SOLVED;
             for _ in 0..len {
                 cubies = apply(&cubies, (lcg(&mut seed) as usize) % 18);
             }
             let c1 = never();
             let c2 = never();
-            let pdb_len = search(&pdbs, &cubies, &c1).expect("solvable").len();
+            let pdb_len = search(&pdbs, &tables, &cubies, &c1)
+                .expect("solvable")
+                .len();
             let zero_len = ida_star(&cubies, |_| 0, &c2).expect("solvable").len();
             assert_eq!(
                 pdb_len, zero_len,

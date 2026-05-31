@@ -71,15 +71,15 @@ pub(crate) fn edge_index_b(c: &Cubies) -> u32 {
 // --- Fast neighbour transitions (validated by the consistency test) ---
 
 /// Per-move corner sub-coordinate transition tables, built once.
-struct CornerMoveTables {
-    /// `perm[mv][rank]` = new corner-permutation rank after move `mv`.
+pub(crate) struct CornerMoveTables {
+    /// `perm[rank][mv]` = new corner-permutation rank after move `mv`.
     perm: Vec<[u16; 18]>,
-    /// `ori[mv][rank]` = new corner-orientation rank after move `mv`.
+    /// `ori[rank][mv]` = new corner-orientation rank after move `mv`.
     ori: Vec<[u16; 18]>,
 }
 
 impl CornerMoveTables {
-    fn build() -> CornerMoveTables {
+    pub(crate) fn build() -> CornerMoveTables {
         // Corner permutation transitions over all 40320 ranks.
         let mut perm = vec![[0u16; 18]; 40320];
         for (rank, row) in perm.iter_mut().enumerate() {
@@ -114,7 +114,7 @@ impl CornerMoveTables {
 
     /// Corner-index neighbour: `idx` factorises as `perm*2187 + ori`, each evolving
     /// independently.
-    fn neighbor(&self, idx: u32, mv: usize) -> u32 {
+    pub(crate) fn neighbor(&self, idx: u32, mv: usize) -> u32 {
         let perm = (idx / 2187) as usize;
         let ori = (idx % 2187) as usize;
         self.perm[perm][mv] as u32 * 2187 + self.ori[ori][mv] as u32
@@ -160,6 +160,102 @@ impl EdgeMoveTables {
             new_oris[j] = (oris[j] + self.flip[mv][t as usize]) % 2;
         }
         partial_perm_rank(&new_slots) * 64 + edge_ori_rank(&new_oris) as u32
+    }
+}
+
+// --- Dense per-node search acceleration (NEVER written to disk) ---
+
+/// Number of edge-position ranks: `12·11·10·9·8·7 = 665280` ordered 6-of-12 placements.
+const EDGE_POS_COUNT: usize = 665_280;
+
+/// In-memory transition tables that let IDA* expand a node from its integer triple
+/// `(corner_index, edge_index_a, edge_index_b)` with a handful of array lookups — no
+/// `Cubies`, no Lehmer/partial-perm ranking per node. Built once and shared by every
+/// search; **never serialised** (it is a pure acceleration of the search, not part of the
+/// on-disk PDB format), so building it does not touch [`super::cache`] / `CACHE_VERSION`.
+///
+/// - **Corners** reuse [`CornerMoveTables`] (validated by `neighbor_consistency`): the
+///   corner index factorises as `perm·2187 + ori`, each evolving independently, so
+///   [`SearchTables::corner_neighbor`] is two table lookups.
+/// - **Edges** cannot factor corner-style (the orientation update depends on the
+///   *destination slot*, i.e. on position). But the index factorises as `pos·64 + ori`
+///   where the 6 group-orientation bits are **member-indexed** and a move only XOR-flips
+///   them (it never permutes them among the 6). So two dense tables — shared by both
+///   groups, since the slot/flip transition is group-independent — capture a move:
+///   [`Self::edge_pos`] `[pos][mv] : u32` is the new position rank, and
+///   [`Self::edge_flip`] `[pos][mv] : u8` is the 6-bit XOR mask applied to the
+///   orientation rank (bit `j`, weight `1<<(5-j)` to match [`edge_ori_rank`], is
+///   `MOVE_CUBES[mv].eo[inv_ep[mv][slots[j]]]` for `slots = partial_perm_unrank(pos)`).
+///
+/// Then [`Self::edge_neighbor`] is `edge_pos[pos][mv]·64 + (ori ^ edge_flip[pos][mv])`.
+pub(crate) struct SearchTables {
+    /// Reused corner sub-coordinate transitions (`perm[40320][18]` + `ori[2187][18]`).
+    corner: CornerMoveTables,
+    /// `edge_pos[pos][mv]` = new edge-position rank after move `mv` (shared by groups).
+    edge_pos: Vec<[u32; 18]>,
+    /// `edge_flip[pos][mv]` = 6-bit XOR mask on the orientation rank (shared by groups).
+    edge_flip: Vec<[u8; 18]>,
+}
+
+impl SearchTables {
+    /// Build the dense transition tables (~62 MB; ~0.3–0.6 s in release). The corner
+    /// tables are the same ones the PDB build uses; the edge tables are derived from the
+    /// already-validated [`EdgeMoveTables`] factoring, materialised over all positions.
+    pub(crate) fn build() -> SearchTables {
+        let corner = CornerMoveTables::build();
+        let edge_tabs = EdgeMoveTables::build();
+
+        let mut edge_pos = vec![[0u32; 18]; EDGE_POS_COUNT];
+        let mut edge_flip = vec![[0u8; 18]; EDGE_POS_COUNT];
+        for pos in 0..EDGE_POS_COUNT {
+            let slots = partial_perm_unrank(pos as u32);
+            let pos_row = &mut edge_pos[pos];
+            let flip_row = &mut edge_flip[pos];
+            for mv in 0..18 {
+                let mut new_slots = [0u8; 6];
+                let mut mask = 0u8;
+                for (j, &s) in slots.iter().enumerate() {
+                    let t = edge_tabs.inv_ep[mv][s as usize];
+                    new_slots[j] = t;
+                    // bit j (MSB-first, matching edge_ori_rank): flip of member j.
+                    mask |= (edge_tabs.flip[mv][t as usize] & 1) << (5 - j);
+                }
+                pos_row[mv] = partial_perm_rank(&new_slots);
+                flip_row[mv] = mask;
+            }
+        }
+
+        SearchTables {
+            corner,
+            edge_pos,
+            edge_flip,
+        }
+    }
+
+    /// Corner-index neighbour after move `mv` (two lookups).
+    #[inline]
+    pub(crate) fn corner_neighbor(&self, idx: u32, mv: usize) -> u32 {
+        self.corner.neighbor(idx, mv)
+    }
+
+    /// Edge-index neighbour (either group) after move `mv`: `idx` factorises as
+    /// `pos·64 + ori`; the position rank advances via [`Self::edge_pos`] and the
+    /// orientation rank XORs with the move's 6-bit flip mask.
+    #[inline]
+    pub(crate) fn edge_neighbor(&self, idx: u32, mv: usize) -> u32 {
+        let pos = (idx / 64) as usize;
+        let ori = (idx % 64) as u8;
+        self.edge_pos[pos][mv] * 64 + (ori ^ self.edge_flip[pos][mv]) as u32
+    }
+
+    /// Approximate heap footprint of the dense tables, in bytes (for diagnostics/tests).
+    #[cfg(test)]
+    fn footprint_bytes(&self) -> usize {
+        use std::mem::size_of;
+        self.corner.perm.len() * size_of::<[u16; 18]>()
+            + self.corner.ori.len() * size_of::<[u16; 18]>()
+            + self.edge_pos.len() * size_of::<[u32; 18]>()
+            + self.edge_flip.len() * size_of::<[u8; 18]>()
     }
 }
 
@@ -220,11 +316,16 @@ impl Pdbs {
         }
     }
 
-    /// Admissible heuristic: the max of the three PDB lower bounds for `c`.
-    pub(crate) fn h(&self, c: &Cubies) -> u8 {
-        let hc = get_nibble(&self.corner, corner_index(c));
-        let ha = get_nibble(&self.edge_a, edge_index_a(c));
-        let hb = get_nibble(&self.edge_b, edge_index_b(c));
+    /// Admissible heuristic: the `max` of the three PDB lower bounds, read directly from a
+    /// precomputed triple of PDB indices — three nibble lookups, no `Cubies` ranking. This
+    /// is the hot-loop form used by the incremental coordinate search. (`max` is the
+    /// correct combiner here, not a sum: every face turn moves cubies in all three groups,
+    /// so the three distances are not additively admissible.)
+    #[inline]
+    pub(crate) fn h_index(&self, ci: u32, ai: u32, bi: u32) -> u8 {
+        let hc = get_nibble(&self.corner, ci);
+        let ha = get_nibble(&self.edge_a, ai);
+        let hb = get_nibble(&self.edge_b, bi);
         hc.max(ha).max(hb)
     }
 }
@@ -319,6 +420,57 @@ mod tests {
                 );
             }
         }
+    }
+
+    // --- 3b. THE guard for the dense SearchTables edge factoring. ---
+    //
+    // Mirrors `neighbor_consistency` but exercises the `(edge_pos, edge_flip)` tables
+    // through `SearchTables::edge_neighbor`: over thousands of random reachable states
+    // and all 18 moves, the factored edge neighbour must equal the ground-truth
+    // `edge_index_a/b(&apply(c, mv))`. (The shared edge tables are group-independent, so
+    // proving them for both groups proves the factoring itself.)
+    #[test]
+    fn search_tables_edge_neighbor_consistency() {
+        let tables = SearchTables::build();
+
+        let mut seed = 0x2468_ACE0u32;
+        for _ in 0..5_000 {
+            let len = 1 + (lcg(&mut seed) as usize % 30);
+            let c = random_reachable(&mut seed, len);
+            let ci = corner_index(&c);
+            let ai = edge_index_a(&c);
+            let bi = edge_index_b(&c);
+            for mv in 0..18usize {
+                let moved = apply(&c, mv);
+                assert_eq!(
+                    tables.corner_neighbor(ci, mv),
+                    corner_index(&moved),
+                    "SearchTables corner neighbour mismatch (mv={mv})"
+                );
+                assert_eq!(
+                    tables.edge_neighbor(ai, mv),
+                    edge_index_a(&moved),
+                    "SearchTables edge A neighbour mismatch (mv={mv})"
+                );
+                assert_eq!(
+                    tables.edge_neighbor(bi, mv),
+                    edge_index_b(&moved),
+                    "SearchTables edge B neighbour mismatch (mv={mv})"
+                );
+            }
+        }
+    }
+
+    // The dense tables' footprint is ~62 MB as the plan specifies (sanity bound, so a
+    // future index/layout change that blows it up is noticed).
+    #[test]
+    fn search_tables_footprint_is_about_62mb() {
+        let tables = SearchTables::build();
+        let mb = tables.footprint_bytes() / (1024 * 1024);
+        assert!(
+            (55..=70).contains(&mb),
+            "SearchTables footprint {mb} MB outside expected ~62 MB band"
+        );
     }
 
     // --- 4. Small real BFS via build_pdb cross-checked vs brute Cubies BFS. ---

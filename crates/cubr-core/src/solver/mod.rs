@@ -31,6 +31,7 @@ mod pdb;
 mod search;
 
 pub use pdb::Pdbs;
+use pdb::SearchTables;
 
 /// Error from solving.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,12 +59,61 @@ pub fn build_or_load_pdbs() -> Pdbs {
 /// [`SolveError::Unsolvable`]), converts it to our coordinate arrays, then runs the
 /// guaranteed-optimal IDA* search. `cancel` aborts the search
 /// (-> [`SolveError::Cancelled`]). An already-solved state returns `Ok(vec![])`.
+///
+/// This convenience entry point builds the in-memory [`SearchTables`] *per call* (~0.3–0.6
+/// s + ~62 MB). For repeated solves (the GUI's one-shot Solve button plus live re-solves)
+/// prefer [`Solver`], which builds the tables once and reuses them.
 pub fn solve(pdbs: &Pdbs, state: &CubeState, cancel: &AtomicBool) -> Result<Vec<Move>, SolveError> {
+    let cubies = state_to_cubies(state)?;
+    let tables = SearchTables::build();
+    run_search(pdbs, &tables, &cubies, cancel)
+}
+
+/// A reusable solver: the [`Pdbs`] plus the prebuilt [`SearchTables`] acceleration
+/// structure. Construct once (the tables build in ~0.3–0.6 s) and call [`Solver::solve`]
+/// for every solve so the tables are amortised across solves rather than rebuilt each
+/// time. The on-disk PDB format is unchanged — [`SearchTables`] is purely in-memory.
+pub struct Solver {
+    pdbs: Pdbs,
+    tables: SearchTables,
+}
+
+impl Solver {
+    /// Build a solver from already-loaded [`Pdbs`], materialising the dense
+    /// [`SearchTables`] once. Pure (no Bevy); the caller runs this once, off-thread.
+    pub fn new(pdbs: Pdbs) -> Solver {
+        let tables = SearchTables::build();
+        Solver { pdbs, tables }
+    }
+
+    /// Solve `state` optimally using the prebuilt tables. Same contract as the free
+    /// [`solve`] (validate -> convert -> guaranteed-optimal IDA*), but with no per-call
+    /// table build.
+    pub fn solve(&self, state: &CubeState, cancel: &AtomicBool) -> Result<Vec<Move>, SolveError> {
+        let cubies = state_to_cubies(state)?;
+        run_search(&self.pdbs, &self.tables, &cubies, cancel)
+    }
+}
+
+/// Validate `state` via kewb and convert it to our coordinate arrays, or
+/// [`SolveError::Unsolvable`] for a physically impossible cube. Shared by [`solve`] and
+/// [`Solver::solve`].
+fn state_to_cubies(state: &CubeState) -> Result<coords::Cubies, SolveError> {
     let facelets = state_to_facelets(state);
     let face = kewb::FaceCube::try_from(facelets.as_str()).map_err(|_| SolveError::Unsolvable)?;
     let cubie = kewb::CubieCube::try_from(&face).map_err(|_| SolveError::Unsolvable)?;
-    let cubies = cubies_from_kewb(&cubie);
-    match search::search(pdbs, &cubies, cancel) {
+    Ok(cubies_from_kewb(&cubie))
+}
+
+/// Run the guaranteed-optimal coordinate search and map cancellation to
+/// [`SolveError::Cancelled`]. Shared by [`solve`] and [`Solver::solve`] (DRY).
+fn run_search(
+    pdbs: &Pdbs,
+    tables: &SearchTables,
+    cubies: &coords::Cubies,
+    cancel: &AtomicBool,
+) -> Result<Vec<Move>, SolveError> {
+    match search::search(pdbs, tables, cubies, cancel) {
         Some(moves) => Ok(moves),
         None => Err(SolveError::Cancelled),
     }
