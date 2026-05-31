@@ -81,12 +81,12 @@ Virtual Cargo workspace: `cubr-core` (pure library, no Bevy) + `cubr` (the Bevy 
 ```
 Cargo.toml         # [workspace]: members crates/cubr-core, crates/cubr; profiles live HERE (root-only)
 crates/
-├── cubr-core/     # LIBRARY — pure, no Bevy (glam, serde, kewb)
+├── cubr-core/     # LIBRARY — pure, no Bevy (glam, serde; kewb is a dev-only test oracle)
 │   └── src/
 │       ├── lib.rs   # pub mod core; pub mod model; pub mod solver;
 │       ├── core.rs  # PURE integer-math cube (source of truth) — no Bevy, fully unit-tested (uses glam::IVec3)
 │       ├── model.rs # StickerColor, Face, Move (parse/notation), CubeState (serde JSON shape) — no to_render_color
-│       └── solver/  # guaranteed-optimal Korf solver: coords + ranking (coords.rs), corner+2 edge PDBs + cache (pdb.rs/cache.rs), IDA* (search.rs); CubeState -> optimal Vec<Move> (kewb kept only for facelet parse/validate). Public: solve, build_or_load_pdbs, Pdbs, SolveError
+│       └── solver/  # HYBRID solver: coords + ranking (coords.rs), corner+2 edge PDBs + cache (pdb.rs/cache.rs), Korf IDA* (search.rs), in-house facelet parse/validate (facelet.rs), Kociemba two-phase fallback (two_phase.rs). `solve` runs Korf optimal under a ~4s budget, two-phase near-optimal fallback past it; CubeState -> Vec<Move>. Public: solve, Solver, build_or_load_pdbs, Pdbs, SolveError
 └── cubr/          # BINARY — the Bevy app
     └── src/
         ├── main.rs        # App + plugin wiring: CubePlugin, CameraPlugin, UiPlugin, ApiPlugin, MeshPickingPlugin, SwipePlugin, SolverPlugin

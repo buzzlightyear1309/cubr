@@ -86,7 +86,6 @@ fn redundant(prev: Option<usize>, cur: usize) -> bool {
 
 /// In-memory move-transition + pruning tables for the two-phase search. Built once via
 /// [`TwoPhaseTables::build`] and shared (immutably) by every solve; never serialised.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct TwoPhaseTables {
     // --- Phase-1 move transitions (18-wide). ---
     /// `co_move[co][mv]` = new corner-orientation rank after move `mv`.
@@ -118,7 +117,6 @@ impl TwoPhaseTables {
     /// `unrank → set only the relevant field on a SOLVED clone → apply → re-rank` — valid
     /// because each coordinate's transition depends only on that coordinate's own field(s)
     /// and the move (proven by `move_tables_match_apply`).
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn build() -> TwoPhaseTables {
         // Phase-1: corner orientation (co only varies; everything else solved).
         let mut co_move = vec![[0u16; 18]; CO];
@@ -478,7 +476,6 @@ impl Ctx<'_> {
 /// its *first* (shortest) phase-2 length; the global shortest is kept. A wall-clock budget
 /// (`CUBR_TWO_PHASE_BUDGET_MS`, default 300 ms) bounds the search but only *after* a first
 /// solution exists, so a solvable cube always returns `Some`.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn solve(
     tables: &TwoPhaseTables,
     start: &Cubies,

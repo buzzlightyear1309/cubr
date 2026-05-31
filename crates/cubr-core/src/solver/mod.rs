@@ -1,9 +1,19 @@
-//! Guaranteed-optimal Korf IDA* solver.
+//! Hybrid Rubik's-cube solver: guaranteed-optimal Korf IDA* under a wall-clock budget,
+//! with a near-optimal Kociemba two-phase fallback for the deep tail.
 //!
 //! No Bevy types or systems live here — this mirrors [`crate::core`] in being a pure,
 //! fully unit-tested module. The Bevy layer (`solve_ui`, in the `cubr` binary)
 //! loads/generates the
 //! [`Pdbs`] off-thread and feeds states through [`solve`].
+//!
+//! ## The hybrid
+//! Both public entry points ([`solve`] and [`Solver::solve`]) delegate to [`run_hybrid`],
+//! which runs the guaranteed-optimal Korf IDA* ([`search::search`]) with a wall-clock
+//! budget (default ~4 s, [`DEFAULT_KORF_BUDGET_MS`]). If Korf finishes within budget the
+//! answer is the exact optimum; if the budget expires (the rare near-God's-number states),
+//! it falls back to the near-optimal in-house two-phase ([`two_phase::solve`]) from the same
+//! state, so even distance-17–20 cubes return a solution in milliseconds. An external cancel
+//! is honoured throughout (-> [`SolveError::Cancelled`]).
 //!
 //! ## The facelet boundary
 //! Parse/validate is now fully in-house. A [`CubeState`] is concatenated into a 54-char
@@ -25,6 +35,8 @@
 
 use crate::model::{CubeState, Face, Move, StickerColor};
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::time::{Duration, Instant};
 
 mod cache;
 mod coords;
@@ -58,44 +70,51 @@ pub fn build_or_load_pdbs() -> Pdbs {
     p
 }
 
-/// Solve `state` optimally. Validates the state via the in-house facelet converter (an
+/// Solve `state` via the hybrid. Validates the state via the in-house facelet converter (an
 /// impossible cube returns [`SolveError::Unsolvable`]), converts it to our coordinate
-/// arrays, then runs the
-/// guaranteed-optimal IDA* search. `cancel` aborts the search
-/// (-> [`SolveError::Cancelled`]). An already-solved state returns `Ok(vec![])`.
+/// arrays, then runs the **hybrid** ([`run_hybrid`]): guaranteed-optimal Korf IDA* under a
+/// ~4 s wall-clock budget, with a near-optimal two-phase fallback if that budget expires.
+/// `cancel` aborts the search (-> [`SolveError::Cancelled`]). An already-solved state returns
+/// `Ok(vec![])`.
 ///
-/// This convenience entry point builds the in-memory [`SearchTables`] *per call* (~0.3–0.6
-/// s + ~62 MB). For repeated solves (the GUI's one-shot Solve button plus live re-solves)
-/// prefer [`Solver`], which builds the tables once and reuses them.
+/// This convenience entry point builds **both** in-memory table sets *per call* — the Korf
+/// [`SearchTables`] (~0.3–0.6 s + ~62 MB) and the [`two_phase::TwoPhaseTables`]. For repeated
+/// solves (the GUI's one-shot Solve button plus live re-solves) prefer [`Solver`], which
+/// builds the tables once and reuses them.
 pub fn solve(pdbs: &Pdbs, state: &CubeState, cancel: &AtomicBool) -> Result<Vec<Move>, SolveError> {
     let cubies = state_to_cubies(state)?;
     let tables = SearchTables::build();
-    run_search(pdbs, &tables, &cubies, cancel)
+    let tp = two_phase::TwoPhaseTables::build();
+    run_hybrid(pdbs, &tables, &tp, &cubies, cancel)
 }
 
-/// A reusable solver: the [`Pdbs`] plus the prebuilt [`SearchTables`] acceleration
-/// structure. Construct once (the tables build in ~0.3–0.6 s) and call [`Solver::solve`]
-/// for every solve so the tables are amortised across solves rather than rebuilt each
-/// time. The on-disk PDB format is unchanged — [`SearchTables`] is purely in-memory.
+/// A reusable solver: the [`Pdbs`] plus the prebuilt in-memory acceleration tables — the
+/// Korf [`SearchTables`] and the [`two_phase::TwoPhaseTables`] used by the hybrid fallback.
+/// Construct once (the tables build in ~0.3–0.6 s) and call [`Solver::solve`] for every solve
+/// so the tables are amortised across solves rather than rebuilt each time. The on-disk PDB
+/// format is unchanged — both table sets are purely in-memory.
 pub struct Solver {
     pdbs: Pdbs,
     tables: SearchTables,
+    tp: two_phase::TwoPhaseTables,
 }
 
 impl Solver {
-    /// Build a solver from already-loaded [`Pdbs`], materialising the dense
-    /// [`SearchTables`] once. Pure (no Bevy); the caller runs this once, off-thread.
+    /// Build a solver from already-loaded [`Pdbs`], materialising both the dense Korf
+    /// [`SearchTables`] and the [`two_phase::TwoPhaseTables`] once. Pure (no Bevy); the
+    /// caller runs this once, off-thread.
     pub fn new(pdbs: Pdbs) -> Solver {
         let tables = SearchTables::build();
-        Solver { pdbs, tables }
+        let tp = two_phase::TwoPhaseTables::build();
+        Solver { pdbs, tables, tp }
     }
 
-    /// Solve `state` optimally using the prebuilt tables. Same contract as the free
-    /// [`solve`] (validate -> convert -> guaranteed-optimal IDA*), but with no per-call
-    /// table build.
+    /// Solve `state` using the prebuilt tables. Same contract as the free [`solve`]
+    /// (validate -> convert -> hybrid Korf-optimal-with-two-phase-fallback), but with no
+    /// per-call table build.
     pub fn solve(&self, state: &CubeState, cancel: &AtomicBool) -> Result<Vec<Move>, SolveError> {
         let cubies = state_to_cubies(state)?;
-        run_search(&self.pdbs, &self.tables, &cubies, cancel)
+        run_hybrid(&self.pdbs, &self.tables, &self.tp, &cubies, cancel)
     }
 }
 
@@ -107,16 +126,85 @@ fn state_to_cubies(state: &CubeState) -> Result<coords::Cubies, SolveError> {
     facelet::facelets_to_cubies(&facelets).ok_or(SolveError::Unsolvable)
 }
 
-/// Run the guaranteed-optimal coordinate search and map cancellation to
-/// [`SolveError::Cancelled`]. Shared by [`solve`] and [`Solver::solve`] (DRY).
-fn run_search(
+/// Default Korf time budget (ms) before the hybrid falls back to the two-phase solver.
+const DEFAULT_KORF_BUDGET_MS: u64 = 4000;
+
+/// Resolve the Korf time budget. `CUBR_KORF_BUDGET_MS`, if set to a parseable value,
+/// overrides [`DEFAULT_KORF_BUDGET_MS`] (handy for tests/benches that want to force the
+/// two-phase fallback quickly); absent / unparseable falls back to the default.
+fn korf_budget_ms() -> u64 {
+    std::env::var("CUBR_KORF_BUDGET_MS")
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_KORF_BUDGET_MS)
+}
+
+/// The hybrid solve both public entry points delegate to. Resolves the Korf budget from
+/// [`korf_budget_ms`] and runs [`run_hybrid_budget`].
+fn run_hybrid(
     pdbs: &Pdbs,
     tables: &SearchTables,
+    tp: &two_phase::TwoPhaseTables,
     cubies: &coords::Cubies,
     cancel: &AtomicBool,
 ) -> Result<Vec<Move>, SolveError> {
-    match search::search(pdbs, tables, cubies, cancel) {
-        Some(moves) => Ok(moves),
+    let budget = Duration::from_millis(korf_budget_ms());
+    run_hybrid_budget(pdbs, tables, tp, cubies, cancel, budget)
+}
+
+/// The hybrid solve with an explicit Korf `budget`. Runs the guaranteed-optimal Korf IDA*
+/// under the wall-clock budget enforced by a watchdog thread; the watchdog also honours
+/// the external `cancel`. Outcomes:
+/// - Korf finishes within budget  -> `Ok(moves)` (exact optimal).
+/// - external `cancel` fired       -> `Err(Cancelled)`.
+/// - budget expired (Korf cancelled, but not by the user) -> run the near-optimal
+///   two-phase from the same state (still honouring `cancel`) and return that.
+///
+/// Taking `budget` as a parameter (rather than only reading the env) lets tests force the
+/// fallback path with `Duration::ZERO` without mutating process-global environment state
+/// (a `setenv`/`getenv` data race under the parallel test runner).
+fn run_hybrid_budget(
+    pdbs: &Pdbs,
+    tables: &SearchTables,
+    tp: &two_phase::TwoPhaseTables,
+    cubies: &coords::Cubies,
+    cancel: &AtomicBool,
+    budget: Duration,
+) -> Result<Vec<Move>, SolveError> {
+    let korf_cancel = AtomicBool::new(false);
+    let done = AtomicBool::new(false);
+
+    // Watchdog: trip `korf_cancel` when the user cancels OR the budget elapses; exit as
+    // soon as the Korf search reports `done`. Scoped so it joins before we read `korf`.
+    let korf = std::thread::scope(|s| {
+        s.spawn(|| {
+            let start = Instant::now();
+            loop {
+                if done.load(Ordering::Relaxed) {
+                    return;
+                }
+                if cancel.load(Ordering::Relaxed) || start.elapsed() >= budget {
+                    korf_cancel.store(true, Ordering::Relaxed);
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        });
+        let r = search::search(pdbs, tables, cubies, &korf_cancel);
+        done.store(true, Ordering::Relaxed);
+        r
+    });
+
+    if let Some(moves) = korf {
+        return Ok(moves); // exact optimal within budget
+    }
+    // Korf returned None only because `korf_cancel` was tripped. Distinguish the cause.
+    if cancel.load(Ordering::Relaxed) {
+        return Err(SolveError::Cancelled);
+    }
+    // Budget expired -> near-optimal two-phase (which itself honours `cancel`).
+    match two_phase::solve(tp, cubies, cancel) {
+        Some(idxs) => Ok(idxs.into_iter().map(coords::index_to_move).collect()),
         None => Err(SolveError::Cancelled),
     }
 }
@@ -300,6 +388,141 @@ mod tests {
                 "facelet conversion diverged from kewb for scramble {scramble:?}"
             );
         }
+    }
+
+    // ★ Hybrid Korf-success wiring (fast, no real PDBs): the solved state short-circuits
+    // inside the Korf `search` before it ever reads the PDBs, so a cheap empty `Pdbs`
+    // suffices. This proves the Korf-success path of `run_hybrid` returns `Ok(vec![])`.
+    #[test]
+    fn hybrid_korf_success_on_solved() {
+        let empty = Pdbs {
+            corner: Vec::new(),
+            edge_a: Vec::new(),
+            edge_b: Vec::new(),
+        };
+        let never = AtomicBool::new(false);
+        assert_eq!(solve(&empty, &CubeState::solved(), &never), Ok(vec![]));
+    }
+
+    // ★ Hybrid two-phase fallback wiring (fast): a correctly-sized all-zero `Pdbs` is a
+    // valid, admissible zero heuristic (no real Korf PDBs needed). A `Duration::ZERO` Korf
+    // budget cancels Korf immediately, so the hybrid must take the two-phase path. The
+    // returned solution is checked to actually solve a deterministic deep scramble. We call
+    // `run_hybrid_budget` directly so no process-global env var is touched (which would race
+    // the parallel test runner's other `getenv` callers).
+    #[test]
+    fn hybrid_falls_back_to_two_phase() {
+        // A correctly-sized all-zero PDB set: an admissible (zero) heuristic, so the Korf
+        // search would still be correct — but the 0 ms budget cancels it before it runs.
+        let zero = Pdbs {
+            corner: vec![0u8; super::pdb::CORNER_SIZE.div_ceil(2)],
+            edge_a: vec![0u8; super::pdb::EDGE_SIZE.div_ceil(2)],
+            edge_b: vec![0u8; super::pdb::EDGE_SIZE.div_ceil(2)],
+        };
+        let tables = SearchTables::build();
+        let tp = two_phase::TwoPhaseTables::build();
+
+        // A deterministic deep scramble (25 moves) built via the LCG helper.
+        let mut seed = 0x0BAD_F00Du32;
+        let mut scramble: Vec<Move> = Vec::with_capacity(25);
+        for _ in 0..25 {
+            scramble.push(Move::ALL[(lcg(&mut seed) as usize) % 18]);
+        }
+        let state = scrambled_state(&scramble);
+        let cubies = state_to_cubies(&state).expect("solvable scramble");
+
+        let never = AtomicBool::new(false);
+        let sol = run_hybrid_budget(
+            &zero,
+            &tables,
+            &tp,
+            &cubies,
+            &never,
+            std::time::Duration::ZERO,
+        )
+        .expect("two-phase fallback must return a solution");
+
+        assert!(!sol.is_empty(), "deep scramble fallback solution was empty");
+        assert!(sol.len() <= 24, "fallback solution too long: {}", sol.len());
+
+        // Apply the scramble then the solution to a fresh core; it must be solved.
+        let mut core = CubeCore::solved();
+        for &m in scramble.iter().chain(&sol) {
+            core.apply(m);
+        }
+        assert_eq!(
+            core.to_state(),
+            CubeState::solved(),
+            "two-phase fallback solution did not solve the cube"
+        );
+    }
+
+    // End-to-end (ignored: builds the full ~85 MB PDBs). The Korf path solves a shallow
+    // 8-quarter-turn scramble optimally (<= 8); a tiny budget forces the two-phase fallback
+    // on a deep ~28-move scramble, whose solution must still re-solve the cube.
+    #[test]
+    #[ignore = "builds the full ~85 MB PDBs; exercises both hybrid paths (slow; run in release)"]
+    fn hybrid_end_to_end() {
+        let pdbs = Pdbs::generate();
+        let solver = Solver::new(pdbs);
+        let cancel = AtomicBool::new(false);
+        let solved = CubeState::solved();
+
+        // Korf path: a shallow 8-quarter-turn scramble must solve optimally (<= 8).
+        let reported: Vec<Move> = ["R", "U", "F", "L", "D", "B", "R", "U"]
+            .iter()
+            .map(|s| Move::parse(s).unwrap())
+            .collect();
+        let state = scrambled_state(&reported);
+        let sol = solver.solve(&state, &cancel).unwrap();
+        assert!(
+            sol.len() <= 8,
+            "Korf path: 8-quarter-turn scramble solved in {} moves (> 8)",
+            sol.len()
+        );
+        let mut core = CubeCore::solved();
+        for &m in reported.iter().chain(&sol) {
+            core.apply(m);
+        }
+        assert_eq!(
+            core.to_state(),
+            solved,
+            "Korf path: reported case not solved"
+        );
+
+        // Two-phase fallback path: a tiny budget on a deep ~28-move scramble. The returned
+        // solution must still re-solve the cube (correctness, not optimality). We drive
+        // `run_hybrid_budget` directly (via the solver's prebuilt tables) so no env var is
+        // mutated — a 150 ms budget forces the fallback.
+        let mut seed = 0xDEEF_2810u32;
+        let mut scramble: Vec<Move> = Vec::with_capacity(28);
+        for _ in 0..28 {
+            scramble.push(Move::ALL[(lcg(&mut seed) as usize) % 18]);
+        }
+        let state = scrambled_state(&scramble);
+        let cubies = state_to_cubies(&state).unwrap();
+        let sol = run_hybrid_budget(
+            &solver.pdbs,
+            &solver.tables,
+            &solver.tp,
+            &cubies,
+            &cancel,
+            std::time::Duration::from_millis(150),
+        )
+        .unwrap();
+        assert!(
+            !sol.is_empty(),
+            "fallback path: deep scramble solution empty"
+        );
+        let mut core = CubeCore::solved();
+        for &m in scramble.iter().chain(&sol) {
+            core.apply(m);
+        }
+        assert_eq!(
+            core.to_state(),
+            solved,
+            "fallback path: deep scramble solution did not solve the cube"
+        );
     }
 
     // End-to-end (ignored: builds the full ~85 MB PDBs). For a few scrambles, `solve`

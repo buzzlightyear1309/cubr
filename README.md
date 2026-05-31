@@ -23,8 +23,9 @@ and set the cube.
   follows the nearest cube axis), plus wheel zoom and an `L`-to-level shortcut.
 - **Standard & Beginner control schemes** — the move panel can show absolute notation (`R`, `U'`,
   `F2`) or view-relative words (`Front CW`, `Up 180`) that track the camera.
-- **Guaranteed-optimal solver** — Korf's IDA\* with pattern databases; every solution is the true
-  minimum, ≤ 20 face turns. See [Solving](#solving).
+- **Hybrid optimal solver** — Korf's IDA\* with pattern databases finds the true minimum (≤ 20 face
+  turns) within a time budget, with a near-optimal two-phase fallback for the rare deep states. See
+  [Solving](#solving).
 - **Local HTTP control API** — `POST /move` and `POST /state` on `localhost:3000`. See
   [HTTP API](#http-api).
 - **Reset** to a solved cube and the starting camera.
@@ -99,10 +100,12 @@ git tag v0.1.0 && git push origin v0.1.0
 - **Live mode**: toggle **Live** and the step list tracks your own moves — each correct move drops
   off the top, a wrong move re-inserts its undo so the list stays valid instantly, and a debounced
   background re-solve quietly restores the optimal sequence when you pause.
-- **Performance**: a multi-core IDA\* search solves most states in well under a second. The rarest
-  near-God's-number scrambles (distance ~18–20) are intrinsically expensive for a *guaranteed-optimal*
-  search and can take minutes. The solve runs off the render thread, so the window stays responsive,
-  and a Reset cancels an in-flight solve.
+- **Performance**: a multi-core Korf IDA\* search solves most states optimally in well under a second.
+  The rarest near-God's-number scrambles (distance ~18–20) are intrinsically expensive for a
+  *guaranteed-optimal* search, so the solver is a **hybrid**: Korf runs under a ~4 s wall-clock budget,
+  and if that expires it falls back to a near-optimal two-phase (Kociemba) solver that returns a short
+  (typically ≤ 24-move) solution in milliseconds — so a solve never stalls for minutes. The solve runs
+  off the render thread, so the window stays responsive, and a Reset cancels an in-flight solve.
 
 ## HTTP API
 
@@ -212,9 +215,14 @@ stickers.
   toward the already-applied core pose, then snaps it back onto the grid.
 - **Solver** (`crates/cubr-core/src/solver/`) is pure and standalone: `coords` (permutation/orientation
   ranking + the move model), `pdb` + `cache` (the three pattern databases, nibble-packed, generated once
-  and cached to disk), and `search` (the IDA\* itself). The
-  [`kewb`](https://crates.io/crates/kewb) crate is used only as a vetted cube model for
-  parsing/validating a facelet string; all the search math is local.
+  and cached to disk), `search` (the guaranteed-optimal Korf IDA\* itself), `facelet` (the in-house
+  facelet-string parser/validator), and `two_phase` (a self-contained Kociemba two-phase solver). The
+  public `solve` is a **hybrid**: it runs the guaranteed-optimal Korf IDA\* under a wall-clock budget
+  (~4 s) and, only if that budget expires on a rare near-God's-number state, falls back to the
+  near-optimal `two_phase` solver — so even distance-17–20 states return a solution in milliseconds.
+  Facelet parsing and physical-solvability validation are now done in-house (`solver/facelet.rs`); the
+  [`kewb`](https://crates.io/crates/kewb) crate is a dev-only test oracle, no longer a runtime
+  dependency. All the search math is local.
 - **API** (`crates/cubr/src/api/`) runs `tiny_http` on a dedicated thread and forwards commands over an
   `mpsc` channel into the Bevy world.
 
@@ -228,7 +236,8 @@ crates/
 │       ├── lib.rs        # pub mod core; pub mod model; pub mod solver;
 │       ├── core.rs       # integer-math CubeCore (the single source of truth)
 │       ├── model.rs      # StickerColor, Face, Move, CubeState (serde JSON shape)
-│       └── solver/       # Korf optimal solver: coords, pattern DBs + cache, IDA* search
+│       └── solver/       # hybrid solver: coords, pattern DBs + cache, Korf IDA* search,
+│                         #   in-house facelet parse/validate, two-phase fallback
 └── cubr/                 # BINARY — the Bevy app
     └── src/
         ├── main.rs          # App + plugin wiring
@@ -256,7 +265,7 @@ and verifies that scrambles solve in the minimum number of moves.
 
 [Rust](https://www.rust-lang.org/) (2021) · [Bevy 0.18](https://bevyengine.org/) ·
 [`tiny_http`](https://crates.io/crates/tiny_http) · [`serde`](https://serde.rs/) ·
-[`kewb`](https://crates.io/crates/kewb) (cube model).
+[`kewb`](https://crates.io/crates/kewb) (dev-only test oracle).
 
 ## License
 
