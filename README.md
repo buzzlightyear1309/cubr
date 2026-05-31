@@ -79,7 +79,7 @@ install (the solver's pattern databases are generated on first launch and cached
 all four platform binaries and publishes a GitHub Release with the archives attached:
 
 ```bash
-git tag v0.1.0 && git push origin v0.1.0
+git tag v0.2.0 && git push origin v0.2.0
 ```
 
 ## Solving

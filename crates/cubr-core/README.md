@@ -11,10 +11,14 @@ rendering dependency.
   vectors, the 18 face turns applied as exact integer permutations. No floating point.
 - **`model`** — [`StickerColor`], [`Face`], [`Move`] (parse/notation), and [`CubeState`], the
   serde JSON shape (six faces × nine row-major stickers).
-- **`solver`** — Herbert Kociemba / Richard Korf style iterative-deepening A\* guided by three
-  additive pattern databases (one over all eight corners, two over disjoint six-edge groups),
-  combined as a max-of-three admissible heuristic. Because the heuristic never overestimates,
-  every solution is a provably shortest move sequence (≤ 20 face turns — God's number).
+- **`solver`** — a **hybrid**. The primary engine is a Richard Korf style iterative-deepening
+  A\* guided by three additive pattern databases (one over all eight corners, two over disjoint
+  six-edge groups), combined as a max-of-three admissible heuristic; because the heuristic never
+  overestimates, every solution it returns is a provably shortest move sequence (≤ 20 face
+  turns — God's number). Korf runs under a wall-clock budget (~4 s); for the rare
+  near-God's-number states that would exceed it, the solver falls back to a self-contained
+  Kociemba two-phase search that returns a short, near-optimal solution in milliseconds, so a
+  solve never stalls.
 
 ## Example
 
@@ -35,10 +39,12 @@ for m in ["R", "U", "F'", "L2"] {
 let pdbs = build_or_load_pdbs();
 let cancel = AtomicBool::new(false);
 
-// Solve optimally. `cancel` (an AtomicBool) can abort a long search from
-// another thread; an already-solved cube returns an empty Vec.
+// Solve via the hybrid: guaranteed-optimal Korf within the wall-clock budget,
+// with a near-optimal two-phase fallback for the rare deep states. `cancel`
+// (an AtomicBool) can abort a long search from another thread; an
+// already-solved cube returns an empty Vec.
 let solution = solve(&pdbs, &cube.to_state(), &cancel).unwrap();
-println!("optimal solution: {} moves", solution.len());
+println!("solution: {} moves", solution.len());
 ```
 
 ## Notes
@@ -47,8 +53,9 @@ println!("optimal solution: {} moves", solution.len());
 - The color scheme and per-face read order are fixed by the
   [`cubr` README](https://github.com/buzzlightyear1309/cubr#cube-state-format) — white `U` up,
   green `F` front (standard Western / BOY).
-- `kewb` is used only to parse/validate a facelet string into a physically-solvable cube; all the
-  coordinate math, the pattern databases, and the search are local to this crate.
+- Facelet parsing and physical-solvability validation are now fully **in-house**; all the
+  coordinate math, the pattern databases, and the search are local to this crate. `kewb` is kept
+  only as a dev-only test oracle (a cross-check in the test suite), not a runtime dependency.
 
 For the interactive 3D app (drag-to-turn, animated optimal solves, an HTTP control API) built on
 top of this crate, see [`cubr`](https://github.com/buzzlightyear1309/cubr).
