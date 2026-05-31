@@ -68,6 +68,7 @@ impl Plugin for CubePlugin {
             // and snapshots; `animate_move` eases the visual and fires
             // `CoreChanged` on completion; `apply_state` handles instant repaints.
             .add_systems(Update, (start_move, animate_move, apply_state).chain())
+            .add_systems(Update, track_camera_light)
             // On every later mutation, snap visuals back onto the core. Ordered
             // after the writers so a `CoreChanged` emitted this frame is seen
             // the same frame — entities snap onto the grid with no float lag.
@@ -81,10 +82,17 @@ impl Plugin for CubePlugin {
     }
 }
 
+/// Marks the key directional light so [`track_camera_light`] can re-aim it each
+/// frame to follow the camera (a "headlamp"), keeping the visible faces evenly
+/// lit as the cube orbits instead of a static bright/dark split.
+#[derive(Component)]
+struct KeyLight;
+
 /// Basic lighting: a key directional light. Ambient fill is attached to the
 /// camera (Bevy 0.18 made `AmbientLight` a per-camera component).
 fn spawn_lighting(mut commands: Commands) {
     commands.spawn((
+        KeyLight,
         DirectionalLight {
             illuminance: 6000.0,
             shadows_enabled: false,
@@ -92,4 +100,21 @@ fn spawn_lighting(mut commands: Commands) {
         },
         Transform::from_xyz(5.0, 8.0, 6.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
+}
+
+/// Aim the key light along the current view each frame (nudged slightly off the
+/// view axis so the cube keeps a gentle, natural gradient rather than looking
+/// flat). Because the light follows the camera, whichever faces you're looking at
+/// are always the lit ones — fixing the static bright/dark split as the cube rotates.
+fn track_camera_light(
+    orbit: Res<crate::camera::OrbitCamera>,
+    mut light: Query<&mut Transform, With<KeyLight>>,
+) {
+    let (forward, right, up) = orbit.basis();
+    // Shine roughly along the look direction, biased a bit from above-left so the
+    // top faces read slightly brighter (a natural key light).
+    let dir = (forward - 0.35 * up + 0.15 * right).normalize();
+    for mut transform in &mut light {
+        transform.look_to(dir, up);
+    }
 }
