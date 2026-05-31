@@ -12,3 +12,11 @@ opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
+
+# The `"*"` glob above tunes *dependencies* only, not workspace members, so the
+# solver crate would otherwise compile at the `[profile.dev]` opt-level = 1 — far
+# too slow for its hot IDA* / pattern-DB number-crunching. Pin it to full
+# optimization even in dev builds (it's small and rarely edited, so the extra
+# compile time is negligible) so `cargo run` / `cargo test` solve at real speed.
+[profile.dev.package.cubr-core]
+opt-level = 3
