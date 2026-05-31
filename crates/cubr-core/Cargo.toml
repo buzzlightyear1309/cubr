@@ -5,6 +5,9 @@ edition = "2021"
 description = "Pure, Bevy-free 3x3x3 Rubik's cube model (integer-math CubeCore) and a guaranteed-optimal Korf solver"
 license = "MIT"
 repository = "https://github.com/buzzlightyear1309/cubr"
+readme = "README.md"
+keywords = ["rubiks-cube", "cube", "solver", "korf", "puzzle"]
+categories = ["algorithms", "mathematics"]
 
 [dependencies]
 glam = "0.30"
