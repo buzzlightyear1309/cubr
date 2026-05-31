@@ -117,7 +117,7 @@ impl Default for Solution {
 }
 
 /// Status-line state for the Solution panel.
-#[derive(Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 enum SolveStatus {
     /// Tables ready, no solution computed yet.
     #[default]
@@ -130,8 +130,9 @@ enum SolveStatus {
     Solved(usize),
     /// The current cube is already solved (empty solution).
     AlreadySolved,
-    /// Live mode reached the solved state (empty list) — a small celebration.
-    LiveSolved,
+    /// The cube just reached the solved state — either Live tracking emptied the
+    /// list or a Run finished playing the whole solution. Shows "Solved!".
+    JustSolved,
     /// The current cube is a physically impossible / invalid state.
     Unsolvable,
 }
@@ -193,7 +194,7 @@ fn status_text(status: SolveStatus) -> String {
         SolveStatus::Solving => "Solving...".to_string(),
         SolveStatus::Solved(n) => format!("Solved in {n} moves"),
         SolveStatus::AlreadySolved => "Already solved".to_string(),
-        SolveStatus::LiveSolved => "Solved!".to_string(),
+        SolveStatus::JustSolved => "Solved!".to_string(),
         SolveStatus::Unsolvable => "Unsolvable state".to_string(),
     }
 }
@@ -489,7 +490,7 @@ fn live_track(
     solution.current = None;
     solution.run_total = 0;
     solution.status = if solution.moves.is_empty() {
-        SolveStatus::LiveSolved
+        SolveStatus::JustSolved
     } else {
         SolveStatus::Solved(solution.moves.len())
     };
@@ -569,7 +570,7 @@ fn poll_solve_task(
             if current_epoch == Some(dispatch_epoch) {
                 if let Ok(moves) = result {
                     solution.status = if moves.is_empty() {
-                        SolveStatus::LiveSolved
+                        SolveStatus::JustSolved
                     } else {
                         SolveStatus::Solved(moves.len())
                     };
@@ -654,6 +655,11 @@ fn track_run_progress(
     solution.current = current_step(solution.run_total, remaining);
     if remaining == 0 {
         solution.run_total = 0;
+        // The run finished and the cube is now solved: clear the list so the
+        // just-played solution can't be Run again to scramble it, and celebrate.
+        solution.moves.clear();
+        solution.current = None;
+        solution.status = SolveStatus::JustSolved;
     }
 }
 
@@ -866,7 +872,7 @@ mod tests {
         assert_eq!(status_text(SolveStatus::Solving), "Solving...");
         assert_eq!(status_text(SolveStatus::Solved(12)), "Solved in 12 moves");
         assert_eq!(status_text(SolveStatus::AlreadySolved), "Already solved");
-        assert_eq!(status_text(SolveStatus::LiveSolved), "Solved!");
+        assert_eq!(status_text(SolveStatus::JustSolved), "Solved!");
         assert_eq!(status_text(SolveStatus::Unsolvable), "Unsolvable state");
     }
 
@@ -1009,6 +1015,28 @@ mod tests {
         app.update();
         let solution = app.world().resource::<Solution>();
         assert!(solution.moves.is_empty());
-        assert!(solution.status == SolveStatus::LiveSolved);
+        assert!(solution.status == SolveStatus::JustSolved);
+    }
+
+    /// When a Run drains (queue empty, nothing animating) `track_run_progress`
+    /// clears the list so it can't be re-run, and shows the solved celebration.
+    #[test]
+    fn track_run_progress_clears_list_when_run_finishes() {
+        let mut app = App::new();
+        app.init_resource::<MoveQueue>();
+        app.init_resource::<ActiveMove>();
+        app.insert_resource(Solution {
+            moves: list("R U F"),
+            status: SolveStatus::Solved(3),
+            current: Some(2),
+            run_total: 3,
+        });
+        app.add_systems(Update, track_run_progress);
+        app.update();
+        let solution = app.world().resource::<Solution>();
+        assert!(solution.moves.is_empty());
+        assert_eq!(solution.run_total, 0);
+        assert_eq!(solution.current, None);
+        assert_eq!(solution.status, SolveStatus::JustSolved);
     }
 }
