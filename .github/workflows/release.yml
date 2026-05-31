@@ -17,7 +17,10 @@ jobs:
           - os: macos-14
             target: aarch64-apple-darwin
             label: cubr-macos-arm64
-          - os: macos-13
+          # Cross-compile the Intel macOS binary on an Apple Silicon runner — the
+          # scarce macos-13 (Intel) runner pool queues badly; macos-14 builds the
+          # x86_64 target natively via the Xcode SDK with no separate runner.
+          - os: macos-14
             target: x86_64-apple-darwin
             label: cubr-macos-x64
           - os: ubuntu-latest
