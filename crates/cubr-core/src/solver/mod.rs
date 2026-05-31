@@ -5,28 +5,30 @@
 //! loads/generates the
 //! [`Pdbs`] off-thread and feeds states through [`solve`].
 //!
-//! ## The kewb boundary
-//! We keep `kewb` *only* as the cube model + facelet parse/validation: a facelet
-//! string is parsed to [`kewb::FaceCube`], converted to [`kewb::CubieCube`] (which
-//! validates physical solvability — wrong color counts / bad parity become
-//! [`SolveError::Unsolvable`]), and then read field-by-field into our own
-//! [`coords::Cubies`] integer arrays via [`cubies_from_kewb`]. All coordinate math,
-//! the pattern databases, and the search run on our own arrays — `kewb::Solver` /
-//! `kewb::DataTable` are no longer used.
+//! ## The facelet boundary
+//! Parse/validate is now fully in-house. A [`CubeState`] is concatenated into a 54-char
+//! URFDLB facelet string (via [`color_to_facelet_char`] / [`state_to_facelets`]) and that
+//! string is converted straight to our [`coords::Cubies`] integer arrays — and validated
+//! for physical solvability — by [`facelet::facelets_to_cubies`] (a port of kewb's
+//! `cube/{facelet,cubie}.rs`; wrong color counts / bad parity become
+//! [`SolveError::Unsolvable`]). All coordinate math, the pattern databases, and the search
+//! run on our own arrays. `kewb` is no longer a runtime dependency — it is kept only as a
+//! dev-dependency test oracle (the `facelet_conversion_matches_kewb` cross-check below and
+//! the `compose_matches_kewb_*` guards in `coords`).
 //!
-//! `kewb` works in a facelet alphabet of face *letters* `U R F D L B` (its
-//! [`kewb::Color`]) laid out in face order **U, R, F, D, L, B**, 9 facelets each,
-//! row-major. Our [`CubeState`] uses the same face order (its struct fields) and the
-//! README per-face read order is already the Kociemba-style layout (mirrored `B`),
-//! so the conversion is a straight concatenation once each sticker color is mapped to
-//! the face letter of the face whose solved center is that color
-//! (`W->U, R->R, G->F, Y->D, O->L, B->B`).
+//! The facelet alphabet is face *letters* `U R F D L B` laid out in face order
+//! **U, R, F, D, L, B**, 9 facelets each, row-major. Our [`CubeState`] uses the same face
+//! order (its struct fields) and the README per-face read order is already the
+//! Kociemba-style layout (mirrored `B`), so the conversion is a straight concatenation
+//! once each sticker color is mapped to the face letter of the face whose solved center is
+//! that color (`W->U, R->R, G->F, Y->D, O->L, B->B`).
 
 use crate::model::{CubeState, Face, Move, StickerColor};
 use std::sync::atomic::AtomicBool;
 
 mod cache;
 mod coords;
+mod facelet;
 mod pdb;
 mod search;
 
@@ -55,8 +57,9 @@ pub fn build_or_load_pdbs() -> Pdbs {
     p
 }
 
-/// Solve `state` optimally. Validates the state via kewb (an impossible cube returns
-/// [`SolveError::Unsolvable`]), converts it to our coordinate arrays, then runs the
+/// Solve `state` optimally. Validates the state via the in-house facelet converter (an
+/// impossible cube returns [`SolveError::Unsolvable`]), converts it to our coordinate
+/// arrays, then runs the
 /// guaranteed-optimal IDA* search. `cancel` aborts the search
 /// (-> [`SolveError::Cancelled`]). An already-solved state returns `Ok(vec![])`.
 ///
@@ -95,14 +98,12 @@ impl Solver {
     }
 }
 
-/// Validate `state` via kewb and convert it to our coordinate arrays, or
-/// [`SolveError::Unsolvable`] for a physically impossible cube. Shared by [`solve`] and
-/// [`Solver::solve`].
+/// Convert `state` to our coordinate arrays via the in-house facelet converter, which
+/// also validates physical solvability — a malformed or impossible cube becomes
+/// [`SolveError::Unsolvable`]. Shared by [`solve`] and [`Solver::solve`].
 fn state_to_cubies(state: &CubeState) -> Result<coords::Cubies, SolveError> {
     let facelets = state_to_facelets(state);
-    let face = kewb::FaceCube::try_from(facelets.as_str()).map_err(|_| SolveError::Unsolvable)?;
-    let cubie = kewb::CubieCube::try_from(&face).map_err(|_| SolveError::Unsolvable)?;
-    Ok(cubies_from_kewb(&cubie))
+    facelet::facelets_to_cubies(&facelets).ok_or(SolveError::Unsolvable)
 }
 
 /// Run the guaranteed-optimal coordinate search and map cancellation to
@@ -119,24 +120,7 @@ fn run_search(
     }
 }
 
-/// Read a validated [`kewb::CubieCube`] into our [`coords::Cubies`] integer arrays.
-/// The `Corner`/`Edge` permutation enums cast straight to their `0..8` / `0..12`
-/// discriminants; orientations are already `u8`. The conventions match (our move
-/// model is transcribed from kewb's), guarded by the conversion-integrity test.
-fn cubies_from_kewb(c: &kewb::CubieCube) -> coords::Cubies {
-    let mut out = coords::SOLVED;
-    for i in 0..8 {
-        out.cp[i] = c.cp[i] as u8;
-        out.co[i] = c.co[i];
-    }
-    for i in 0..12 {
-        out.ep[i] = c.ep[i] as u8;
-        out.eo[i] = c.eo[i];
-    }
-    out
-}
-
-/// Map a sticker color to the `kewb` facelet *letter* (face letter) of the face whose
+/// Map a sticker color to the facelet *letter* (face letter) of the face whose
 /// solved center is that color. The scheme is fixed by the README, so this is the
 /// inverse of [`Face::solved_color`].
 fn color_to_facelet_char(color: StickerColor) -> char {
@@ -150,14 +134,15 @@ fn color_to_facelet_char(color: StickerColor) -> char {
     }
 }
 
-/// Produce the `kewb` URFDLB facelet string (54 chars). Faces are concatenated in
-/// order U, R, F, D, L, B; within each face, indices 0..9 in our row-major order
-/// (which is the README per-face read order). Each sticker becomes its face letter.
+/// Produce the URFDLB facelet string (54 chars) consumed by [`facelet::facelets_to_cubies`].
+/// Faces are concatenated in order U, R, F, D, L, B; within each face, indices 0..9 in our
+/// row-major order (which is the README per-face read order). Each sticker becomes its face
+/// letter.
 fn state_to_facelets(state: &CubeState) -> String {
-    // kewb's facelet order is U, R, F, D, L, B (its `Color`/`FaceCube` ordering).
-    const KEWB_FACE_ORDER: [Face; 6] = [Face::U, Face::R, Face::F, Face::D, Face::L, Face::B];
+    // URFDLB facelet order (the Kociemba-style layout the converter expects).
+    const FACE_ORDER: [Face; 6] = [Face::U, Face::R, Face::F, Face::D, Face::L, Face::B];
     let mut s = String::with_capacity(54);
-    for face in KEWB_FACE_ORDER {
+    for face in FACE_ORDER {
         for &color in state.face(face) {
             s.push(color_to_facelet_char(color));
         }
@@ -187,15 +172,28 @@ mod tests {
         core.to_state()
     }
 
-    /// The full pipeline used by `solve`: `CubeState` -> facelets -> kewb -> `Cubies`.
-    fn state_through_kewb(state: &CubeState) -> Cubies {
-        let facelets = state_to_facelets(state);
-        let face = kewb::FaceCube::try_from(facelets.as_str()).expect("valid facelets");
-        let cubie = kewb::CubieCube::try_from(&face).expect("solvable cube");
-        cubies_from_kewb(&cubie)
+    /// The full pipeline used by `solve`: `CubeState` -> facelets -> in-house converter
+    /// -> `Cubies`.
+    fn state_through_facelets(state: &CubeState) -> Cubies {
+        facelet::facelets_to_cubies(&state_to_facelets(state)).expect("valid")
     }
 
-    // The solved state produces the canonical kewb solved facelet string.
+    /// Read a `kewb::CubieCube` into our `Cubies` arrays (dev-only test oracle). Mirrors
+    /// the field-for-field copy the old kewb runtime path used.
+    fn cubies_from_kewb(c: &kewb::CubieCube) -> Cubies {
+        let mut out = SOLVED;
+        for i in 0..8 {
+            out.cp[i] = c.cp[i] as u8;
+            out.co[i] = c.co[i];
+        }
+        for i in 0..12 {
+            out.ep[i] = c.ep[i] as u8;
+            out.eo[i] = c.eo[i];
+        }
+        out
+    }
+
+    // The solved state produces the canonical solved facelet string.
     #[test]
     fn solved_facelets_string_is_canonical() {
         let expected = "UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB";
@@ -211,7 +209,7 @@ mod tests {
     #[test]
     fn conversion_pipeline_matches_coords_apply() {
         // Solved round-trips to SOLVED.
-        assert_eq!(state_through_kewb(&CubeState::solved()), SOLVED);
+        assert_eq!(state_through_facelets(&CubeState::solved()), SOLVED);
 
         let mut seed = 0x1234_5678u32;
         for _ in 0..50 {
@@ -228,7 +226,7 @@ mod tests {
             }
 
             let state = scrambled_state(&scramble);
-            let through = state_through_kewb(&state);
+            let through = state_through_facelets(&state);
             assert_eq!(
                 through, expected,
                 "pipeline diverged from coords::apply for scramble {scramble:?}"
@@ -238,9 +236,9 @@ mod tests {
 
     // A physically impossible state is rejected as Unsolvable. Flip a single edge in
     // place (the U/F edge): color counts stay correct and the permutation is valid, but
-    // the edge-orientation parity is now odd — physically unreachable, so kewb's
-    // CubieCube conversion rejects it. (A lone off-color sticker can re-parse to a valid
-    // cubie and is NOT a reliable rejection.)
+    // the edge-orientation parity is now odd — physically unreachable, so the in-house
+    // `facelet::facelets_to_cubies` validator rejects it. (A lone off-color sticker can
+    // re-parse to a valid cubie and is NOT a reliable rejection.)
     #[test]
     fn impossible_state_is_unsolvable() {
         // README per-face read order: U index 7 is the U/F edge sticker on the U face;
@@ -251,8 +249,8 @@ mod tests {
         bad.U[7] = StickerColor::G;
         bad.F[1] = StickerColor::W;
 
-        // `solve` rejects the cube during kewb validation, before the search ever reads
-        // the PDBs — so a cheap empty `Pdbs` (no slow generation) suffices here.
+        // `solve` rejects the cube during in-house validation, before the search ever
+        // reads the PDBs — so a cheap empty `Pdbs` (no slow generation) suffices here.
         let empty = Pdbs {
             corner: Vec::new(),
             edge_a: Vec::new(),
@@ -264,6 +262,43 @@ mod tests {
             Err(SolveError::Unsolvable),
             "an odd-parity edge flip must be rejected before the search"
         );
+    }
+
+    // ★ Cross-check the in-house facelet converter against kewb (the dev-dep oracle): for
+    // the solved state and ~50 deterministic random scrambles, our
+    // `facelet::facelets_to_cubies` must produce byte-for-byte the same `Cubies` as
+    // parsing the same facelet string through kewb's FaceCube/CubieCube. This proves the
+    // port is exact and the dropped runtime dependency changed nothing.
+    #[test]
+    fn facelet_conversion_matches_kewb() {
+        let through_kewb = |state: &CubeState| -> Cubies {
+            let facelets = state_to_facelets(state);
+            let face = kewb::FaceCube::try_from(facelets.as_str()).expect("valid facelets");
+            let cubie = kewb::CubieCube::try_from(&face).expect("solvable cube");
+            cubies_from_kewb(&cubie)
+        };
+
+        // Solved state.
+        assert_eq!(
+            state_through_facelets(&CubeState::solved()),
+            through_kewb(&CubeState::solved()),
+            "solved state diverged from kewb"
+        );
+
+        let mut seed = 0x9E37_79B9u32;
+        for _ in 0..50 {
+            let len = 1 + (lcg(&mut seed) as usize % 30); // 1..=30 moves
+            let mut scramble: Vec<Move> = Vec::with_capacity(len);
+            for _ in 0..len {
+                scramble.push(Move::ALL[(lcg(&mut seed) as usize) % 18]);
+            }
+            let state = scrambled_state(&scramble);
+            assert_eq!(
+                state_through_facelets(&state),
+                through_kewb(&state),
+                "facelet conversion diverged from kewb for scramble {scramble:?}"
+            );
+        }
     }
 
     // End-to-end (ignored: builds the full ~85 MB PDBs). For a few scrambles, `solve`

@@ -12,7 +12,7 @@ categories = ["algorithms", "mathematics"]
 [dependencies]
 glam = "0.30"
 serde = { version = "1", features = ["derive"] }
-kewb = "0.4"
 
 [dev-dependencies]
 serde_json = "1"
+kewb = "0.4"
