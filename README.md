@@ -63,6 +63,24 @@ curl -X POST localhost:3000/move -H 'Content-Type: application/json' -d '{"move"
 
 > Developed and tested on macOS; Bevy targets macOS, Linux, and Windows.
 
+## Download
+
+Prebuilt, self-contained binaries are on the
+[**Releases** page](https://github.com/buzzlightyear1309/cubr/releases). Grab the archive for your
+platform (macOS arm64/x64, Linux x64, Windows x64), unpack it, and run `cubr` — no separate assets to
+install (the solver's pattern databases are generated on first launch and cached locally).
+
+> **macOS**: the build is unsigned. After unpacking, in Terminal run
+> `xattr -dr com.apple.quarantine ./cubr` once, then `./cubr` (or right-click → Open). Otherwise
+> you'll see a Gatekeeper warning — expected for an unsigned app.
+
+**Cutting a release (maintainers):** pushing a `v*` tag triggers the release workflow, which builds
+all four platform binaries and publishes a GitHub Release with the archives attached:
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+```
+
 ## Solving
 
 `cubr` doesn't just find *a* solution — it finds an **optimal** one, every time.

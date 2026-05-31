@@ -1,0 +1,107 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+            label: cubr-macos-arm64
+          - os: macos-13
+            target: x86_64-apple-darwin
+            label: cubr-macos-x64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            label: cubr-linux-x64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            label: cubr-windows-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Bevy Linux build deps
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --locked -p cubr --target ${{ matrix.target }}
+
+      - name: Package (non-Windows)
+        if: runner.os != 'Windows'
+        run: |
+          staging="${{ matrix.label }}-${{ github.ref_name }}"
+          mkdir -p "$staging"
+          cp "target/${{ matrix.target }}/release/cubr" "$staging/"
+          cp README.md "$staging/"
+          cp LICENSE "$staging/"
+          tar -czf "$staging.tar.gz" "$staging"
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $staging = "${{ matrix.label }}-${{ github.ref_name }}"
+          New-Item -ItemType Directory -Force -Path $staging | Out-Null
+          Copy-Item "target\${{ matrix.target }}\release\cubr.exe" -Destination $staging
+          Copy-Item README.md -Destination $staging
+          Copy-Item LICENSE -Destination $staging
+          Compress-Archive -Path $staging -DestinationPath "$staging.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.label }}
+          path: |
+            ${{ matrix.label }}-*.tar.gz
+            ${{ matrix.label }}-*.zip
+          if-no-files-found: ignore
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true
+          body: |
+            ## Downloads
+
+            Grab the archive for your platform below, unpack it, and run `cubr`.
+
+            **macOS** (`cubr-macos-arm64` / `cubr-macos-x64`): This build is unsigned.
+            After unpacking, in Terminal run `xattr -dr com.apple.quarantine ./cubr`
+            once, then `./cubr` (or right-click → Open). You'll see a Gatekeeper
+            warning otherwise — this is expected for an unsigned app.
+
+            **Windows** (`cubr-windows-x64`): SmartScreen may show
+            'Windows protected your PC' → More info → Run anyway.
+
+            **Linux** (`cubr-linux-x64`): Needs the runtime libs (`libasound2`,
+            `libudev1`) — present on most desktops;
+            `sudo apt-get install libasound2 libudev1` if missing.
